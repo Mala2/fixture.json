@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-30T05:45:00Z",
+  "refresh_after_seconds": 21600,
+  "fixture": {
+    "id": 1001,
+    "competition": {
+      "id": 307,
+      "name": "Saudi Pro League",
+      "short_name": "SPL"
+    },
+    "home_team": {
+      "id": 2939,
+      "name": "Al Hilal",
+      "short_name": "HIL"
+    },
+    "away_team": {
+      "id": 2940,
+      "name": "Al Nassr",
+      "short_name": "NAS"
+    },
+    "kickoff_utc": "2026-08-16T03:00:00Z",
+    "venue": "Kingdom Arena",
+    "status": "scheduled"
+  }
+}
