@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-30T05:40:00Z",
+  "generated_at": "2026-07-31T07:48:50Z",
   "refresh_after_seconds": 21600,
   "team": {
     "id": "al-hilal",
@@ -8,9 +8,9 @@
     "short_name": "HIL"
   },
   "fixture": {
-    "id": "al-hilal-vs-al-nassr-2026-08-16",
-    "competition": "Saudi Pro League",
-    "kickoff_utc": "2026-08-16T03:00:00Z",
+    "id": "thesportsdb-2549422",
+    "competition": "Club Friendlies",
+    "kickoff_utc": "2026-08-03T15:00:00Z",
     "venue": "Kingdom Arena",
     "home_away": "home",
     "home_team": {
@@ -19,9 +19,9 @@
       "short_name": "HIL"
     },
     "away_team": {
-      "id": "al-nassr",
-      "name": "Al Nassr",
-      "short_name": "NAS"
+      "id": "138049",
+      "name": "Al-Ahli Doha",
+      "short_name": "AHD"
     },
     "status": "scheduled"
   }
