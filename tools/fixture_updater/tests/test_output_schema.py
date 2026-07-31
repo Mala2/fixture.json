@@ -9,13 +9,18 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 UPDATER_DIR = Path(__file__).resolve().parents[1]
 if str(UPDATER_DIR) not in sys.path:
     sys.path.insert(0, str(UPDATER_DIR))
 
 from normalize_fixture import NormalizationConfig, normalize_fixture  # noqa: E402
-from provider_api_football import parse_provider_envelope  # noqa: E402
+from provider_api_football import (  # noqa: E402
+    ProviderConfigurationError,
+    parse_provider_envelope,
+)
+from update_fixture import settings_from_environment  # noqa: E402
 from validate_output import (  # noqa: E402
     OutputValidationError,
     load_and_validate,
@@ -32,7 +37,11 @@ def make_normalized(now: datetime = FIXED_NOW) -> dict:
     with (
         FIXTURES_DIR / "api_football_next_fixture.json"
     ).open("r", encoding="utf-8") as sample:
-        provider = parse_provider_envelope(json.load(sample), 2939)
+        provider = parse_provider_envelope(
+            json.load(sample),
+            2939,
+            now_utc=now,
+        )
     return normalize_fixture(
         provider,
         NormalizationConfig(
@@ -156,6 +165,79 @@ class OutputSchemaTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 4, completed.stderr)
         self.assertIn("Provider error:", completed.stderr)
+
+    def test_lookahead_days_defaults_to_180(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"API_FOOTBALL_TEAM_ID": "2939"},
+            clear=True,
+        ):
+            self.assertEqual(settings_from_environment().lookahead_days, 180)
+
+    def test_invalid_lookahead_days_is_rejected(self) -> None:
+        for value in ("six", "6", "366", "-10"):
+            with self.subTest(value=value):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "API_FOOTBALL_TEAM_ID": "2939",
+                        "FIXTURE_LOOKAHEAD_DAYS": value,
+                    },
+                    clear=True,
+                ):
+                    with self.assertRaisesRegex(
+                        ProviderConfigurationError,
+                        "FIXTURE_LOOKAHEAD_DAYS",
+                    ):
+                        settings_from_environment()
+
+    def test_empty_response_preserves_existing_output(self) -> None:
+        self._assert_no_fixture_preserves_output(
+            FIXTURES_DIR / "api_football_empty_response.json"
+        )
+
+    def test_no_usable_candidate_preserves_existing_output(self) -> None:
+        payload = json.loads(
+            (
+                FIXTURES_DIR / "api_football_multi_fixture.json"
+            ).read_text(encoding="utf-8")
+        )
+        payload["response"] = [
+            entry
+            for entry in payload["response"]
+            if entry["fixture"]["status"]["short"] in {"FT", "CANC"}
+        ]
+        payload["results"] = len(payload["response"])
+        with tempfile.TemporaryDirectory() as directory:
+            sample = Path(directory) / "no-usable.json"
+            sample.write_text(json.dumps(payload), encoding="utf-8")
+            self._assert_no_fixture_preserves_output(sample)
+
+    def _assert_no_fixture_preserves_output(self, sample: Path) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "fixture.json"
+            output.write_bytes(serialize_validated_fixture(make_normalized()))
+            original = output.read_bytes()
+            environment = os.environ.copy()
+            environment["API_FOOTBALL_TEAM_ID"] = "2939"
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(UPDATER_DIR / "update_fixture.py"),
+                    "--provider-sample",
+                    str(sample),
+                    "--output",
+                    str(output),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            self.assertEqual(completed.returncode, 3, completed.stderr)
+            self.assertIn("existing output preserved", completed.stderr)
+            self.assertEqual(output.read_bytes(), original)
 
 
 if __name__ == "__main__":
