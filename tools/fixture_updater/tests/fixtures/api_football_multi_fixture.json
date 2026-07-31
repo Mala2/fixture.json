@@ -1,0 +1,125 @@
+{
+  "get": "fixtures",
+  "parameters": {
+    "team": "2939",
+    "from": "2026-07-31",
+    "to": "2027-01-27",
+    "timezone": "UTC"
+  },
+  "errors": [],
+  "results": 4,
+  "paging": {
+    "current": 1,
+    "total": 1
+  },
+  "response": [
+    {
+      "fixture": {
+        "id": 5000003,
+        "date": "2026-08-20T21:00:00+03:00",
+        "venue": {
+          "id": 100,
+          "name": "Kingdom Arena"
+        },
+        "status": {
+          "short": "NS"
+        }
+      },
+      "league": {
+        "id": 307,
+        "name": "Saudi Pro League"
+      },
+      "teams": {
+        "home": {
+          "id": 2939,
+          "name": "Al Hilal"
+        },
+        "away": {
+          "id": 2941,
+          "name": "Al Ittihad"
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 5000001,
+        "date": "2026-07-30T21:00:00+03:00",
+        "venue": {
+          "id": 100,
+          "name": "Kingdom Arena"
+        },
+        "status": {
+          "short": "FT"
+        }
+      },
+      "league": {
+        "id": 307,
+        "name": "Saudi Pro League"
+      },
+      "teams": {
+        "home": {
+          "id": 2940,
+          "name": "Al Nassr"
+        },
+        "away": {
+          "id": 2939,
+          "name": "Al Hilal"
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 5000002,
+        "date": "2026-08-05T21:00:00+03:00",
+        "venue": {
+          "id": 101,
+          "name": "Prince Faisal Stadium"
+        },
+        "status": {
+          "short": "NS"
+        }
+      },
+      "league": {
+        "id": 307,
+        "name": "Saudi Pro League"
+      },
+      "teams": {
+        "home": {
+          "id": 2942,
+          "name": "Al Ahli"
+        },
+        "away": {
+          "id": 2939,
+          "name": "Al Hilal"
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 5000004,
+        "date": "2026-08-01T21:00:00+03:00",
+        "venue": {
+          "id": 100,
+          "name": "Kingdom Arena"
+        },
+        "status": {
+          "short": "CANC"
+        }
+      },
+      "league": {
+        "id": 307,
+        "name": "Saudi Pro League"
+      },
+      "teams": {
+        "home": {
+          "id": 2939,
+          "name": "Al Hilal"
+        },
+        "away": {
+          "id": 2943,
+          "name": "Al Shabab"
+        }
+      }
+    }
+  ]
+}
