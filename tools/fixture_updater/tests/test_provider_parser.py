@@ -86,6 +86,7 @@ class ProviderParserTests(unittest.TestCase):
             team_id,
             now_utc=FIXED_NOW,
             logger=logger,
+            season=2026,
         )
 
     def entry(
@@ -200,6 +201,14 @@ class ProviderParserTests(unittest.TestCase):
         )
         self.assertEqual(self.select(payload).provider_fixture_id, 42)
 
+    def test_january_2027_fixture_is_allowed_for_season_2026(self) -> None:
+        payload = make_payload(
+            [self.entry(44, "2027-01-10T18:00:00Z", "NS")]
+        )
+        fixture = self.select(payload)
+        self.assertEqual(fixture.provider_fixture_id, 44)
+        self.assertEqual(fixture.kickoff, "2027-01-10T18:00:00Z")
+
     def test_target_team_away_fixture_is_accepted(self) -> None:
         entry = self.entry(50, "2026-08-03T18:00:00Z", "NS")
         teams = entry["teams"]
@@ -292,7 +301,11 @@ class ProviderParserTests(unittest.TestCase):
             opener=failing_opener,
         )
         with self.assertRaisesRegex(ProviderHttpError, "401"):
-            client.fetch_next_fixture(2939, now_utc=FIXED_NOW)
+            client.fetch_next_fixture(
+                2939,
+                season=2026,
+                now_utc=FIXED_NOW,
+            )
 
     def test_request_uses_dynamic_utc_date_range_without_next(self) -> None:
         captured_url = ""
@@ -309,6 +322,7 @@ class ProviderParserTests(unittest.TestCase):
         )
         client.fetch_next_fixture(
             2939,
+            season=2026,
             now_utc=datetime(
                 2026,
                 7,
@@ -324,6 +338,7 @@ class ProviderParserTests(unittest.TestCase):
         )
         self.assertNotIn("next", query)
         self.assertEqual(query["team"], ["2939"])
+        self.assertEqual(query["season"], ["2026"])
         self.assertEqual(query["from"], ["2026-07-31"])
         self.assertEqual(query["to"], ["2027-01-27"])
         self.assertEqual(query["timezone"], ["UTC"])
@@ -347,11 +362,15 @@ class ProviderParserTests(unittest.TestCase):
             opener=lambda *args, **kwargs: FakeResponse(payload),
             logger=logger,
         )
-        result = client.fetch_next_fixture(2939, now_utc=FIXED_NOW)
+        result = client.fetch_next_fixture(
+            2939,
+            season=2026,
+            now_utc=FIXED_NOW,
+        )
         self.assertEqual(result.remaining_requests, 99)
         self.assertNotIn(secret, stream.getvalue())
         self.assertIn(
-            "/fixtures?team=2939&from=2026-07-31"
+            "/fixtures?team=2939&season=2026&from=2026-07-31"
             "&to=2027-01-27&timezone=UTC",
             stream.getvalue(),
         )
@@ -391,7 +410,11 @@ class ProviderParserTests(unittest.TestCase):
             ProviderResponseError,
             "provider returned",
         ):
-            client.fetch_next_fixture(2939, now_utc=FIXED_NOW)
+            client.fetch_next_fixture(
+                2939,
+                season=2026,
+                now_utc=FIXED_NOW,
+            )
 
         logged = stream.getvalue()
         self.assertNotIn(secret, logged)
