@@ -1,26 +1,28 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-30T05:45:00Z",
+  "generated_at": "2026-07-30T05:40:00Z",
   "refresh_after_seconds": 21600,
+  "team": {
+    "id": "al-hilal",
+    "name": "Al Hilal",
+    "short_name": "HIL"
+  },
   "fixture": {
-    "id": 1001,
-    "competition": {
-      "id": 307,
-      "name": "Saudi Pro League",
-      "short_name": "SPL"
-    },
+    "id": "al-hilal-vs-al-nassr-2026-08-16",
+    "competition": "Saudi Pro League",
+    "kickoff_utc": "2026-08-16T03:00:00Z",
+    "venue": "Kingdom Arena",
+    "home_away": "home",
     "home_team": {
-      "id": 2939,
+      "id": "al-hilal",
       "name": "Al Hilal",
       "short_name": "HIL"
     },
     "away_team": {
-      "id": 2940,
+      "id": "al-nassr",
       "name": "Al Nassr",
       "short_name": "NAS"
     },
-    "kickoff_utc": "2026-08-16T03:00:00Z",
-    "venue": "Kingdom Arena",
     "status": "scheduled"
   }
 }
