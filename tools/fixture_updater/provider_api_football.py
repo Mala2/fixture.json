@@ -14,6 +14,10 @@ from typing import Any, Callable, Mapping
 
 API_BASE_URL = "https://v3.football.api-sports.io"
 MAX_PROVIDER_RESPONSE_BYTES = 1_048_576
+RATE_LIMIT_REMAINING_HEADERS = (
+    "x-ratelimit-remaining",
+    "x-ratelimit-requests-remaining",
+)
 
 
 class ProviderError(RuntimeError):
@@ -57,6 +61,39 @@ class ProviderFixture:
 class ProviderFetchResult:
     fixture: ProviderFixture
     remaining_requests: int | None
+
+
+def _redact_api_key(value: str, api_key: str) -> str:
+    if not api_key:
+        return value
+    return value.replace(api_key, "***")
+
+
+def sanitize_provider_errors(errors: object, api_key: str) -> str:
+    """Serialize provider errors while redacting every API-key occurrence."""
+
+    def redact(value: object) -> object:
+        if isinstance(value, str):
+            return _redact_api_key(value, api_key)
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if isinstance(value, tuple):
+            return [redact(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                _redact_api_key(str(key), api_key): redact(item)
+                for key, item in value.items()
+            }
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return "<unserializable provider error value>"
+
+    sanitized = json.dumps(
+        redact(errors),
+        ensure_ascii=False,
+        indent=2,
+    )
+    return _redact_api_key(sanitized, api_key)
 
 
 def validate_team_id(value: str | int) -> int:
@@ -287,6 +324,7 @@ class ApiFootballClient:
                     status = getattr(response, "status", None)
                     if status is None:
                         status = response.getcode()
+                    self._log_http_diagnostics(status, response.headers)
                     if status != 200:
                         raise ProviderHttpError(
                             f"provider HTTP status {status}"
@@ -303,11 +341,13 @@ class ApiFootballClient:
                     raise ProviderResponseError(
                         "provider returned invalid JSON"
                     ) from error
+                self._log_payload_diagnostics(payload)
                 return ProviderFetchResult(
                     fixture=parse_provider_envelope(payload, team_id),
                     remaining_requests=remaining,
                 )
             except urllib.error.HTTPError as error:
+                self._log_http_diagnostics(error.code, error.headers)
                 if 500 <= error.code <= 599 and attempt < self._maximum_attempts:
                     self._logger.warning(
                         "Temporary provider HTTP %d; retrying once",
@@ -331,12 +371,58 @@ class ApiFootballClient:
 
         raise ProviderHttpError("provider request attempts exhausted")
 
+    def _log_http_diagnostics(self, status: object, headers: Any) -> None:
+        self._logger.info("API-Football HTTP status: %s", status)
+        for header_name in RATE_LIMIT_REMAINING_HEADERS:
+            raw_value = self._header_value(headers, header_name)
+            if raw_value is not None:
+                self._logger.info(
+                    "API-Football rate limit remaining (%s): %s",
+                    header_name,
+                    _redact_api_key(str(raw_value), self._api_key),
+                )
+
+    def _log_payload_diagnostics(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            self._logger.info("API-Football results: <unavailable>")
+            return
+
+        results = payload.get("results", "<missing>")
+        self._logger.info(
+            "API-Football results: %s",
+            sanitize_provider_errors(results, self._api_key),
+        )
+        if "errors" in payload and payload["errors"]:
+            self._logger.error(
+                "API-Football provider errors:\n%s",
+                sanitize_provider_errors(
+                    payload["errors"],
+                    self._api_key,
+                ),
+            )
+
     @staticmethod
     def _remaining_requests(headers: Any) -> int | None:
-        raw_value = headers.get("x-ratelimit-remaining")
-        if raw_value is None:
-            raw_value = headers.get("X-RateLimit-Remaining")
+        raw_value = ApiFootballClient._header_value(
+            headers,
+            "x-ratelimit-remaining",
+        )
         if raw_value is None:
             return None
         text = str(raw_value).strip()
         return int(text) if text.isascii() and text.isdigit() else None
+
+    @staticmethod
+    def _header_value(headers: Any, name: str) -> Any:
+        if headers is None:
+            return None
+        raw_value = headers.get(name)
+        if raw_value is not None:
+            return raw_value
+        try:
+            for header_name, value in headers.items():
+                if str(header_name).lower() == name:
+                    return value
+        except (AttributeError, TypeError):
+            return None
+        return None
