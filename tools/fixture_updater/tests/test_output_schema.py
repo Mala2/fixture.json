@@ -137,6 +137,26 @@ class OutputSchemaTests(unittest.TestCase):
             self.assertIn("Dry run", completed.stdout)
             self.assertFalse(output.exists())
 
+    def test_provider_validation_error_preserves_exit_code_four(self) -> None:
+        environment = os.environ.copy()
+        environment["API_FOOTBALL_TEAM_ID"] = "2939"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(UPDATER_DIR / "update_fixture.py"),
+                "--dry-run",
+                "--provider-sample",
+                str(FIXTURES_DIR / "api_football_error_response.json"),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(completed.returncode, 4, completed.stderr)
+        self.assertIn("Provider error:", completed.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
