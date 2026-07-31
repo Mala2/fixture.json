@@ -44,7 +44,11 @@ def config() -> NormalizationConfig:
 
 class NormalizerTests(unittest.TestCase):
     def test_target_team_is_home(self) -> None:
-        provider = parse_provider_envelope(load_valid_payload(), 2939)
+        provider = parse_provider_envelope(
+            load_valid_payload(),
+            2939,
+            now_utc=FIXED_NOW,
+        )
         normalized = normalize_fixture(
             provider,
             config(),
@@ -62,7 +66,11 @@ class NormalizerTests(unittest.TestCase):
         payload = copy.deepcopy(load_valid_payload())
         teams = payload["response"][0]["teams"]
         teams["home"], teams["away"] = teams["away"], teams["home"]
-        provider = parse_provider_envelope(payload, 2939)
+        provider = parse_provider_envelope(
+            payload,
+            2939,
+            now_utc=FIXED_NOW,
+        )
         normalized = normalize_fixture(
             provider,
             config(),
