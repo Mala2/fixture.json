@@ -41,6 +41,7 @@ def make_normalized(now: datetime = FIXED_NOW) -> dict:
             json.load(sample),
             2939,
             now_utc=now,
+            season=2026,
         )
     return normalize_fixture(
         provider,
@@ -123,6 +124,7 @@ class OutputSchemaTests(unittest.TestCase):
             output = Path(directory) / "fixture.json"
             environment = os.environ.copy()
             environment["API_FOOTBALL_TEAM_ID"] = "2939"
+            environment["API_FOOTBALL_SEASON"] = "2026"
             environment["PYTHONDONTWRITEBYTECODE"] = "1"
             completed = subprocess.run(
                 [
@@ -149,6 +151,7 @@ class OutputSchemaTests(unittest.TestCase):
     def test_provider_validation_error_preserves_exit_code_four(self) -> None:
         environment = os.environ.copy()
         environment["API_FOOTBALL_TEAM_ID"] = "2939"
+        environment["API_FOOTBALL_SEASON"] = "2026"
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         completed = subprocess.run(
             [
@@ -169,10 +172,56 @@ class OutputSchemaTests(unittest.TestCase):
     def test_lookahead_days_defaults_to_180(self) -> None:
         with mock.patch.dict(
             os.environ,
-            {"API_FOOTBALL_TEAM_ID": "2939"},
+            {
+                "API_FOOTBALL_TEAM_ID": "2939",
+                "API_FOOTBALL_SEASON": "2026",
+            },
             clear=True,
         ):
-            self.assertEqual(settings_from_environment().lookahead_days, 180)
+            self.assertEqual(
+                settings_from_environment(
+                    now_utc=FIXED_NOW,
+                ).lookahead_days,
+                180,
+            )
+
+    def test_missing_season_fails_before_provider_request(self) -> None:
+        environment = os.environ.copy()
+        environment["API_FOOTBALL_TEAM_ID"] = "2939"
+        environment.pop("API_FOOTBALL_SEASON", None)
+        environment["API_FOOTBALL_KEY"] = "must-not-be-used"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(UPDATER_DIR / "update_fixture.py"),
+                "--dry-run",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("API_FOOTBALL_SEASON", completed.stderr)
+        self.assertNotIn("Provider request:", completed.stderr)
+
+    def test_invalid_season_is_rejected(self) -> None:
+        for value in ("abcd", "999", "12345", "1999", "2028"):
+            with self.subTest(value=value):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "API_FOOTBALL_TEAM_ID": "2939",
+                        "API_FOOTBALL_SEASON": value,
+                    },
+                    clear=True,
+                ):
+                    with self.assertRaisesRegex(
+                        ProviderConfigurationError,
+                        "API_FOOTBALL_SEASON",
+                    ):
+                        settings_from_environment(now_utc=FIXED_NOW)
 
     def test_invalid_lookahead_days_is_rejected(self) -> None:
         for value in ("six", "6", "366", "-10"):
@@ -181,6 +230,7 @@ class OutputSchemaTests(unittest.TestCase):
                     os.environ,
                     {
                         "API_FOOTBALL_TEAM_ID": "2939",
+                        "API_FOOTBALL_SEASON": "2026",
                         "FIXTURE_LOOKAHEAD_DAYS": value,
                     },
                     clear=True,
@@ -189,7 +239,7 @@ class OutputSchemaTests(unittest.TestCase):
                         ProviderConfigurationError,
                         "FIXTURE_LOOKAHEAD_DAYS",
                     ):
-                        settings_from_environment()
+                        settings_from_environment(now_utc=FIXED_NOW)
 
     def test_empty_response_preserves_existing_output(self) -> None:
         self._assert_no_fixture_preserves_output(
@@ -220,6 +270,7 @@ class OutputSchemaTests(unittest.TestCase):
             original = output.read_bytes()
             environment = os.environ.copy()
             environment["API_FOOTBALL_TEAM_ID"] = "2939"
+            environment["API_FOOTBALL_SEASON"] = "2026"
             environment["PYTHONDONTWRITEBYTECODE"] = "1"
             completed = subprocess.run(
                 [
@@ -237,6 +288,12 @@ class OutputSchemaTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 3, completed.stderr)
             self.assertIn("existing output preserved", completed.stderr)
+            self.assertIn("Provider team ID: 2939", completed.stderr)
+            self.assertIn("Provider season: 2026", completed.stderr)
+            self.assertIn(
+                "Requested fixture date range:",
+                completed.stderr,
+            )
             self.assertEqual(output.read_bytes(), original)
 
 
