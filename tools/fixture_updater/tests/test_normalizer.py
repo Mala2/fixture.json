@@ -48,6 +48,7 @@ class NormalizerTests(unittest.TestCase):
             load_valid_payload(),
             2939,
             now_utc=FIXED_NOW,
+            season=2026,
         )
         normalized = normalize_fixture(
             provider,
@@ -70,6 +71,7 @@ class NormalizerTests(unittest.TestCase):
             payload,
             2939,
             now_utc=FIXED_NOW,
+            season=2026,
         )
         normalized = normalize_fixture(
             provider,
