@@ -18,6 +18,7 @@ MAX_PROVIDER_RESPONSE_BYTES = 1_048_576
 DEFAULT_LOOKAHEAD_DAYS = 180
 MINIMUM_LOOKAHEAD_DAYS = 7
 MAXIMUM_LOOKAHEAD_DAYS = 365
+MINIMUM_SEASON = 2000
 PAST_FIXTURE_TOLERANCE = timedelta(minutes=5)
 RATE_LIMIT_REMAINING_HEADERS = (
     "x-ratelimit-remaining",
@@ -166,6 +167,27 @@ def _require_aware_utc(value: datetime, path: str) -> datetime:
             f"{path} must be a timezone-aware datetime"
         )
     return value.astimezone(timezone.utc)
+
+
+def validate_season(value: str | int, *, now_utc: datetime) -> int:
+    fixed_now_utc = _require_aware_utc(now_utc, "now_utc")
+    if isinstance(value, bool):
+        raise ProviderConfigurationError(
+            "API_FOOTBALL_SEASON must contain exactly four digits"
+        )
+    text = str(value)
+    if len(text) != 4 or not text.isascii() or not text.isdigit():
+        raise ProviderConfigurationError(
+            "API_FOOTBALL_SEASON must contain exactly four digits"
+        )
+    season = int(text)
+    maximum_season = fixed_now_utc.year + 1
+    if season < MINIMUM_SEASON or season > maximum_season:
+        raise ProviderConfigurationError(
+            "API_FOOTBALL_SEASON must be between "
+            f"{MINIMUM_SEASON} and {maximum_season}"
+        )
+    return season
 
 
 def _require_mapping(
@@ -335,12 +357,14 @@ def parse_provider_envelope(
     logger: logging.Logger | None = None,
     requested_from: date | None = None,
     requested_to: date | None = None,
+    season: str | int,
     api_key: str = "",
 ) -> ProviderFixture:
     """Validate, filter, and select one fixture from an API-Football page."""
 
     target_team_id = validate_team_id(target_team_id)
     fixed_now_utc = _require_aware_utc(now_utc, "now_utc")
+    validated_season = validate_season(season, now_utc=fixed_now_utc)
     selection_logger = logger or logging.getLogger(__name__)
     root = _require_mapping(payload, "$")
 
@@ -366,6 +390,8 @@ def parse_provider_envelope(
             "results: does not match response array length"
         )
 
+    selection_logger.info("Provider team ID: %d", target_team_id)
+    selection_logger.info("Provider season: %d", validated_season)
     if requested_from is not None and requested_to is not None:
         selection_logger.info(
             "Requested fixture date range: %s to %s",
@@ -511,17 +537,23 @@ class ApiFootballClient:
         self,
         team_id: int,
         *,
+        season: str | int,
         now_utc: datetime,
         lookahead_days: int = DEFAULT_LOOKAHEAD_DAYS,
     ) -> ProviderFetchResult:
         team_id = validate_team_id(team_id)
         fixed_now_utc = _require_aware_utc(now_utc, "now_utc")
+        validated_season = validate_season(
+            season,
+            now_utc=fixed_now_utc,
+        )
         validated_lookahead_days = validate_lookahead_days(lookahead_days)
         from_date = fixed_now_utc.date()
         to_date = from_date + timedelta(days=validated_lookahead_days)
         query = urllib.parse.urlencode(
             {
                 "team": team_id,
+                "season": validated_season,
                 "from": from_date.isoformat(),
                 "to": to_date.isoformat(),
                 "timezone": "UTC",
@@ -574,6 +606,7 @@ class ApiFootballClient:
                         logger=self._logger,
                         requested_from=from_date,
                         requested_to=to_date,
+                        season=validated_season,
                         api_key=self._api_key,
                     ),
                     remaining_requests=remaining,
