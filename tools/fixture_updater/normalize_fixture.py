@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from provider_api_football import ProviderFixture, ProviderResponseError
+from provider_common import ProviderFixture, ProviderResponseError
 
 SCHEDULED_CODES = frozenset({"TBD", "NS"})
 LIVE_CODES = frozenset(
@@ -25,10 +25,11 @@ class NormalizationError(ValueError):
 
 @dataclass(frozen=True)
 class NormalizationConfig:
-    target_team_id: int
+    target_team_id: str | int
     target_team_slug: str
     target_team_short_name: str
     refresh_after_seconds: int
+    target_team_name: str = "Al Hilal"
 
 
 def map_status(status_code: str) -> str:
@@ -70,6 +71,29 @@ def slugify(
     if not slug:
         raise NormalizationError("team ID is empty after length limiting")
     return slug
+
+
+def normalize_team_id(
+    provider_team_id: str | int | None,
+    *,
+    provider_target_team_id: str | int,
+    canonical_target_team_id: str,
+    team_name: str,
+) -> str:
+    """Map provider identity into the provider-independent device identity."""
+
+    raw_id = None if provider_team_id is None else str(provider_team_id)
+    if raw_id == str(provider_target_team_id):
+        return slugify(canonical_target_team_id)
+    if (
+        raw_id is not None
+        and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", raw_id)
+    ):
+        return raw_id
+    return slugify(
+        team_name,
+        fallback=f"team-{raw_id}" if raw_id is not None else None,
+    )
 
 
 def _validate_short_name(value: str, source: str) -> str:
@@ -168,10 +192,15 @@ def normalize_fixture(
     *,
     now: datetime,
 ) -> dict[str, Any]:
-    target_team_id = config.target_team_id
-    if provider.home_team.provider_id == target_team_id:
+    target_team_id = str(config.target_team_id)
+
+    def provider_id(team: Any) -> str | None:
+        value = team.provider_id
+        return None if value is None else str(value)
+
+    if provider_id(provider.home_team) == target_team_id:
         home_away = "home"
-    elif provider.away_team.provider_id == target_team_id:
+    elif provider_id(provider.away_team) == target_team_id:
         home_away = "away"
     else:
         raise ProviderResponseError(
@@ -181,17 +210,26 @@ def normalize_fixture(
     target_slug = slugify(config.target_team_slug)
 
     def normalize_team(provider_team: Any) -> dict[str, str]:
-        is_target = provider_team.provider_id == target_team_id
-        team_id = (
-            target_slug
-            if is_target
-            else slugify(
-                provider_team.name,
-                fallback=f"team-{provider_team.provider_id}",
+        raw_provider_id = provider_id(provider_team)
+        is_target = raw_provider_id == target_team_id
+        if is_target:
+            team_id = normalize_team_id(
+                raw_provider_id,
+                provider_target_team_id=target_team_id,
+                canonical_target_team_id=target_slug,
+                team_name=provider_team.name,
             )
-        )
+            team_name = config.target_team_name.strip()
+        else:
+            team_name = provider_team.name.strip()
+            team_id = normalize_team_id(
+                raw_provider_id,
+                provider_target_team_id=target_team_id,
+                canonical_target_team_id=target_slug,
+                team_name=team_name,
+            )
         short_name = resolve_short_name(
-            provider_team.name,
+            team_name,
             aliases=aliases,
             configured_target_short_name=(
                 config.target_team_short_name if is_target else None
@@ -199,13 +237,17 @@ def normalize_fixture(
         )
         return {
             "id": team_id,
-            "name": provider_team.name.strip(),
+            "name": team_name,
             "short_name": short_name,
         }
 
     home_team = normalize_team(provider.home_team)
     away_team = normalize_team(provider.away_team)
     selected_team = home_team if home_away == "home" else away_team
+    provider_name = getattr(provider, "provider_name", "api-football")
+    normalized_status = getattr(provider, "normalized_status", None)
+    if normalized_status is None:
+        normalized_status = map_status(provider.status_code)
 
     return {
         "schema_version": 1,
@@ -213,13 +255,13 @@ def normalize_fixture(
         "refresh_after_seconds": config.refresh_after_seconds,
         "team": dict(selected_team),
         "fixture": {
-            "id": f"api-football-{provider.provider_fixture_id}",
+            "id": f"{provider_name}-{provider.provider_fixture_id}",
             "competition": provider.competition_name.strip(),
             "kickoff_utc": canonical_utc_timestamp(provider.kickoff),
             "venue": provider.venue_name.strip(),
             "home_away": home_away,
             "home_team": home_team,
             "away_team": away_team,
-            "status": map_status(provider.status_code),
+            "status": normalized_status,
         },
     }
