@@ -2,7 +2,9 @@
   "get": "fixtures",
   "parameters": {
     "team": "2939",
-    "next": "1"
+    "from": "2026-07-31",
+    "to": "2027-01-27",
+    "timezone": "UTC"
   },
   "errors": [],
   "results": 0,
