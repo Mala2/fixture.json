@@ -26,6 +26,7 @@ from provider_api_football import (
     load_provider_sample,
     parse_provider_envelope,
     validate_lookahead_days,
+    validate_season,
     validate_team_id,
 )
 from validate_output import (
@@ -50,6 +51,7 @@ EXIT_VALIDATION = 5
 @dataclass(frozen=True)
 class UpdaterSettings:
     team_id: int
+    season: int
     output_path: Path
     refresh_after_seconds: int
     lookahead_days: int
@@ -77,10 +79,16 @@ def _parse_positive_integer(
 
 
 def settings_from_environment(
+    *,
+    now_utc: datetime,
     output_override: str | None = None,
 ) -> UpdaterSettings:
     team_id_text = os.environ.get("API_FOOTBALL_TEAM_ID", "")
     team_id = validate_team_id(team_id_text)
+    season = validate_season(
+        os.environ.get("API_FOOTBALL_SEASON", ""),
+        now_utc=now_utc,
+    )
     refresh_after_seconds = _parse_positive_integer(
         os.environ.get(
             "FIXTURE_REFRESH_AFTER_SECONDS",
@@ -119,6 +127,7 @@ def settings_from_environment(
     )
     return UpdaterSettings(
         team_id=team_id,
+        season=season,
         output_path=output_path,
         refresh_after_seconds=refresh_after_seconds,
         lookahead_days=lookahead_days,
@@ -170,6 +179,7 @@ def normalize_provider_payload(
         logger=logger,
         requested_from=from_date,
         requested_to=to_date,
+        season=settings.season,
     )
     normalized = normalize_fixture(
         provider_fixture,
@@ -223,9 +233,12 @@ def main() -> int:
     arguments = build_argument_parser().parse_args()
 
     try:
-        settings = settings_from_environment(arguments.output)
-        aliases = load_aliases(settings.aliases_path)
         now = datetime.now(timezone.utc)
+        settings = settings_from_environment(
+            now_utc=now,
+            output_override=arguments.output,
+        )
+        aliases = load_aliases(settings.aliases_path)
 
         if arguments.provider_sample:
             payload = load_provider_sample(arguments.provider_sample)
@@ -243,6 +256,7 @@ def main() -> int:
                 logger=logger,
             ).fetch_next_fixture(
                 settings.team_id,
+                season=settings.season,
                 now_utc=now,
                 lookahead_days=settings.lookahead_days,
             )
