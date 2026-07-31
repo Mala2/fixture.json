@@ -9,11 +9,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 API_BASE_URL = "https://v3.football.api-sports.io"
 MAX_PROVIDER_RESPONSE_BYTES = 1_048_576
+DEFAULT_LOOKAHEAD_DAYS = 180
+MINIMUM_LOOKAHEAD_DAYS = 7
+MAXIMUM_LOOKAHEAD_DAYS = 365
+PAST_FIXTURE_TOLERANCE = timedelta(minutes=5)
 RATE_LIMIT_REMAINING_HEADERS = (
     "x-ratelimit-remaining",
     "x-ratelimit-requests-remaining",
@@ -63,10 +68,25 @@ class ProviderFetchResult:
     remaining_requests: int | None
 
 
+@dataclass(frozen=True)
+class _FixtureCandidate:
+    fixture: ProviderFixture
+    kickoff_utc: datetime
+    normalized_status: str
+
+
 def _redact_api_key(value: str, api_key: str) -> str:
     if not api_key:
         return value
     return value.replace(api_key, "***")
+
+
+def _sanitize_log_text(value: str, api_key: str) -> str:
+    return (
+        _redact_api_key(value, api_key)
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    )
 
 
 def sanitize_provider_errors(errors: object, api_key: str) -> str:
@@ -114,6 +134,40 @@ def validate_team_id(value: str | int) -> int:
     return team_id
 
 
+def validate_lookahead_days(value: str | int) -> int:
+    if isinstance(value, bool):
+        raise ProviderConfigurationError(
+            "FIXTURE_LOOKAHEAD_DAYS must be an integer"
+        )
+    text = str(value).strip()
+    if not text.isascii() or not text.isdigit():
+        raise ProviderConfigurationError(
+            "FIXTURE_LOOKAHEAD_DAYS must be an integer"
+        )
+    lookahead_days = int(text)
+    if (
+        lookahead_days < MINIMUM_LOOKAHEAD_DAYS
+        or lookahead_days > MAXIMUM_LOOKAHEAD_DAYS
+    ):
+        raise ProviderConfigurationError(
+            "FIXTURE_LOOKAHEAD_DAYS must be between "
+            f"{MINIMUM_LOOKAHEAD_DAYS} and {MAXIMUM_LOOKAHEAD_DAYS}"
+        )
+    return lookahead_days
+
+
+def _require_aware_utc(value: datetime, path: str) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise ProviderConfigurationError(
+            f"{path} must be a timezone-aware datetime"
+        )
+    return value.astimezone(timezone.utc)
+
+
 def _require_mapping(
     value: Any,
     path: str,
@@ -155,29 +209,139 @@ def _require_string(
 def _parse_team(
     teams: Mapping[str, Any],
     side: str,
+    entry_path: str,
 ) -> ProviderTeam:
-    team = _require_mapping(teams.get(side), f"response[0].teams.{side}")
+    team_path = f"{entry_path}.teams.{side}"
+    team = _require_mapping(teams.get(side), team_path)
     return ProviderTeam(
         provider_id=_require_positive_int(
             team,
             "id",
-            f"response[0].teams.{side}.id",
+            f"{team_path}.id",
         ),
         name=_require_string(
             team,
             "name",
-            f"response[0].teams.{side}.name",
+            f"{team_path}.name",
         ),
+    )
+
+
+def _parse_kickoff(value: str, path: str) -> datetime:
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as error:
+        raise ProviderResponseError(
+            f"{path}: expected ISO-8601 timestamp"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ProviderResponseError(
+            f"{path}: timestamp must include a timezone"
+        )
+    return parsed.astimezone(timezone.utc)
+
+
+def _canonical_utc(value: datetime) -> str:
+    return (
+        value.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+
+
+def _parse_fixture_entry(
+    value: Any,
+    index: int,
+    target_team_id: int,
+) -> tuple[ProviderFixture, datetime]:
+    entry_path = f"response[{index}]"
+    entry = _require_mapping(value, entry_path)
+    fixture_path = f"{entry_path}.fixture"
+    fixture = _require_mapping(entry.get("fixture"), fixture_path)
+    league = _require_mapping(
+        entry.get("league"),
+        f"{entry_path}.league",
+    )
+    teams = _require_mapping(
+        entry.get("teams"),
+        f"{entry_path}.teams",
+    )
+    venue = _require_mapping(
+        fixture.get("venue"),
+        f"{fixture_path}.venue",
+    )
+    status = _require_mapping(
+        fixture.get("status"),
+        f"{fixture_path}.status",
+    )
+
+    home_team = _parse_team(teams, "home", entry_path)
+    away_team = _parse_team(teams, "away", entry_path)
+    if target_team_id not in (
+        home_team.provider_id,
+        away_team.provider_id,
+    ):
+        raise ProviderResponseError(
+            f"{entry_path}: configured target team is absent"
+        )
+
+    kickoff_text = _require_string(
+        fixture,
+        "date",
+        f"{fixture_path}.date",
+    )
+    kickoff_utc = _parse_kickoff(
+        kickoff_text,
+        f"{fixture_path}.date",
+    )
+    return (
+        ProviderFixture(
+            provider_fixture_id=_require_positive_int(
+                fixture,
+                "id",
+                f"{fixture_path}.id",
+            ),
+            kickoff=_canonical_utc(kickoff_utc),
+            competition_name=_require_string(
+                league,
+                "name",
+                f"{entry_path}.league.name",
+            ),
+            venue_name=_require_string(
+                venue,
+                "name",
+                f"{fixture_path}.venue.name",
+            ),
+            status_code=_require_string(
+                status,
+                "short",
+                f"{fixture_path}.status.short",
+            ).upper(),
+            home_team=home_team,
+            away_team=away_team,
+        ),
+        kickoff_utc,
     )
 
 
 def parse_provider_envelope(
     payload: Any,
     target_team_id: int,
+    *,
+    now_utc: datetime,
+    logger: logging.Logger | None = None,
+    requested_from: date | None = None,
+    requested_to: date | None = None,
+    api_key: str = "",
 ) -> ProviderFixture:
-    """Validate one API-Football fixture and return a provider-only model."""
+    """Validate, filter, and select one fixture from an API-Football page."""
 
     target_team_id = validate_team_id(target_team_id)
+    fixed_now_utc = _require_aware_utc(now_utc, "now_utc")
+    selection_logger = logger or logging.getLogger(__name__)
     root = _require_mapping(payload, "$")
 
     if "errors" not in root:
@@ -197,65 +361,108 @@ def parse_provider_envelope(
     response = root.get("response")
     if not isinstance(response, list):
         raise ProviderResponseError("response: expected array")
-    if results == 0 and len(response) == 0:
-        raise NoUpcomingFixture("provider returned no upcoming fixture")
-    if results != 1 or len(response) != 1:
+    if results != len(response):
         raise ProviderResponseError(
-            "response: expected exactly one upcoming fixture"
+            "results: does not match response array length"
         )
 
-    entry = _require_mapping(response[0], "response[0]")
-    fixture = _require_mapping(entry.get("fixture"), "response[0].fixture")
-    league = _require_mapping(entry.get("league"), "response[0].league")
-    teams = _require_mapping(entry.get("teams"), "response[0].teams")
-    venue = _require_mapping(
-        fixture.get("venue"),
-        "response[0].fixture.venue",
-    )
-    status = _require_mapping(
-        fixture.get("status"),
-        "response[0].fixture.status",
-    )
+    if requested_from is not None and requested_to is not None:
+        selection_logger.info(
+            "Requested fixture date range: %s to %s",
+            requested_from.isoformat(),
+            requested_to.isoformat(),
+        )
+    selection_logger.info("Total provider results: %d", results)
 
-    home_team = _parse_team(teams, "home")
-    away_team = _parse_team(teams, "away")
-    if target_team_id not in (
-        home_team.provider_id,
-        away_team.provider_id,
-    ):
-        raise ProviderResponseError(
-            "configured target team is absent from the fixture"
+    excluded_status = 0
+    excluded_date = 0
+    excluded_invalid = 0
+    candidates: list[_FixtureCandidate] = []
+
+    from normalize_fixture import NormalizationError, map_status
+
+    for index, entry in enumerate(response):
+        try:
+            provider_fixture, kickoff_utc = _parse_fixture_entry(
+                entry,
+                index,
+                target_team_id,
+            )
+        except ProviderResponseError as error:
+            excluded_invalid += 1
+            selection_logger.warning(
+                "Skipping response[%d] with invalid structure: %s",
+                index,
+                error,
+            )
+            continue
+
+        try:
+            normalized_status = map_status(provider_fixture.status_code)
+        except NormalizationError:
+            excluded_status += 1
+            selection_logger.warning(
+                "Skipping provider fixture ID %d with unknown status %s",
+                provider_fixture.provider_fixture_id,
+                _sanitize_log_text(
+                    provider_fixture.status_code,
+                    api_key,
+                ),
+            )
+            continue
+
+        if normalized_status in {"finished", "cancelled"}:
+            excluded_status += 1
+            continue
+        if (
+            normalized_status != "live"
+            and kickoff_utc < fixed_now_utc - PAST_FIXTURE_TOLERANCE
+        ):
+            excluded_date += 1
+            continue
+
+        candidates.append(
+            _FixtureCandidate(
+                fixture=provider_fixture,
+                kickoff_utc=kickoff_utc,
+                normalized_status=normalized_status,
+            )
         )
 
-    return ProviderFixture(
-        provider_fixture_id=_require_positive_int(
-            fixture,
-            "id",
-            "response[0].fixture.id",
-        ),
-        kickoff=_require_string(
-            fixture,
-            "date",
-            "response[0].fixture.date",
-        ),
-        competition_name=_require_string(
-            league,
-            "name",
-            "response[0].league.name",
-        ),
-        venue_name=_require_string(
-            venue,
-            "name",
-            "response[0].fixture.venue.name",
-        ),
-        status_code=_require_string(
-            status,
-            "short",
-            "response[0].fixture.status.short",
-        ).upper(),
-        home_team=home_team,
-        away_team=away_team,
+    candidates.sort(key=lambda candidate: candidate.kickoff_utc)
+    selection_logger.info(
+        "Excluded fixtures: status=%d, date=%d, invalid_structure=%d",
+        excluded_status,
+        excluded_date,
+        excluded_invalid,
     )
+    selection_logger.info("Usable fixture candidates: %d", len(candidates))
+
+    if not candidates:
+        raise NoUpcomingFixture(
+            "provider returned no usable fixture in the requested date range"
+        )
+
+    live_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.normalized_status == "live"
+    ]
+    selected = live_candidates[0] if live_candidates else candidates[0]
+    selection_logger.info(
+        "Selected provider fixture ID: %d",
+        selected.fixture.provider_fixture_id,
+    )
+    selection_logger.info(
+        "Selected kickoff UTC: %s",
+        selected.fixture.kickoff,
+    )
+    selection_logger.info(
+        "Selected teams: %s vs %s",
+        _sanitize_log_text(selected.fixture.home_team.name, api_key),
+        _sanitize_log_text(selected.fixture.away_team.name, api_key),
+    )
+    return selected.fixture
 
 
 def load_provider_sample(path: str | Path) -> Any:
@@ -300,9 +507,26 @@ class ApiFootballClient:
         self._sleeper = sleeper
         self._logger = logger or logging.getLogger(__name__)
 
-    def fetch_next_fixture(self, team_id: int) -> ProviderFetchResult:
+    def fetch_next_fixture(
+        self,
+        team_id: int,
+        *,
+        now_utc: datetime,
+        lookahead_days: int = DEFAULT_LOOKAHEAD_DAYS,
+    ) -> ProviderFetchResult:
         team_id = validate_team_id(team_id)
-        query = urllib.parse.urlencode({"team": team_id, "next": 1})
+        fixed_now_utc = _require_aware_utc(now_utc, "now_utc")
+        validated_lookahead_days = validate_lookahead_days(lookahead_days)
+        from_date = fixed_now_utc.date()
+        to_date = from_date + timedelta(days=validated_lookahead_days)
+        query = urllib.parse.urlencode(
+            {
+                "team": team_id,
+                "from": from_date.isoformat(),
+                "to": to_date.isoformat(),
+                "timezone": "UTC",
+            }
+        )
         url = f"{API_BASE_URL}/fixtures?{query}"
         request = urllib.request.Request(
             url,
@@ -343,7 +567,15 @@ class ApiFootballClient:
                     ) from error
                 self._log_payload_diagnostics(payload)
                 return ProviderFetchResult(
-                    fixture=parse_provider_envelope(payload, team_id),
+                    fixture=parse_provider_envelope(
+                        payload,
+                        team_id,
+                        now_utc=fixed_now_utc,
+                        logger=self._logger,
+                        requested_from=from_date,
+                        requested_to=to_date,
+                        api_key=self._api_key,
+                    ),
                     remaining_requests=remaining,
                 )
             except urllib.error.HTTPError as error:
