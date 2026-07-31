@@ -30,6 +30,7 @@ Required environment variables:
 
 - `API_FOOTBALL_KEY`: secret API-Sports key.
 - `API_FOOTBALL_TEAM_ID`: positive numeric team ID.
+- `API_FOOTBALL_SEASON`: four-digit starting year for the competition season.
 
 Optional variables and defaults:
 
@@ -39,11 +40,12 @@ Optional variables and defaults:
 - `TARGET_TEAM_SLUG=al-hilal`
 - `TARGET_TEAM_SHORT_NAME=HIL`
 
-`API_FOOTBALL_TEAM_ID` deliberately has no default. Verify it in the provider
-dashboard before enabling the workflow. The updater requests:
+`API_FOOTBALL_TEAM_ID` and `API_FOOTBALL_SEASON` deliberately have no
+defaults. Verify both in the provider dashboard before enabling the workflow.
+The updater requests:
 
 ```text
-GET /fixtures?team=<numeric-team-id>&from=<current-UTC-date>&to=<UTC-date-plus-lookahead>&timezone=UTC
+GET /fixtures?team=<numeric-team-id>&season=<four-digit-start-year>&from=<current-UTC-date>&to=<UTC-date-plus-lookahead>&timezone=UTC
 ```
 
 over `https://v3.football.api-sports.io` with the `x-apisports-key` header,
@@ -53,6 +55,9 @@ responses are not retried. The free-plan-incompatible `next` parameter is
 never sent. The updater strictly parses every returned fixture, skips
 finished, cancelled, unknown, malformed, and stale non-live candidates, then
 prefers a live fixture or otherwise chooses the earliest future fixture.
+Seasons spanning two calendar years use their starting year, so the
+2026–27 season is `API_FOOTBALL_SEASON=2026`; a January 2027 fixture remains
+eligible within that season and date range.
 
 ## Local setup
 
@@ -65,8 +70,9 @@ python -m pip install --requirement tools/fixture_updater/requirements.txt
 python -m unittest discover -s tools/fixture_updater/tests -p "test_*.py" -v
 ```
 
-Set `API_FOOTBALL_TEAM_ID` and securely export `API_FOOTBALL_KEY` in the local
-shell. Do not save the key in a checked-in `.env` file or shell script.
+Set `API_FOOTBALL_TEAM_ID` and `API_FOOTBALL_SEASON`, and securely export
+`API_FOOTBALL_KEY` in the local shell. Do not save the key in a checked-in
+`.env` file or shell script.
 
 Network dry run:
 
@@ -77,7 +83,7 @@ python tools/fixture_updater/update_fixture.py --dry-run
 Saved-response run without a network call or API key:
 
 ```sh
-API_FOOTBALL_TEAM_ID=2939 \
+API_FOOTBALL_TEAM_ID=2939 API_FOOTBALL_SEASON=2026 \
 python tools/fixture_updater/update_fixture.py \
   --provider-sample tools/fixture_updater/tests/fixtures/api_football_multi_fixture.json \
   --output /tmp/fixture.json
@@ -168,7 +174,8 @@ API_FOOTBALL_KEY
 Add this required repository variable under the adjacent **Variables** tab:
 
 ```text
-API_FOOTBALL_TEAM_ID=<verified numeric team ID>
+API_FOOTBALL_TEAM_ID=2932
+API_FOOTBALL_SEASON=2026
 ```
 
 Optional repository variables are
@@ -180,9 +187,19 @@ With GitHub CLI, the equivalent setup is:
 ```sh
 gh secret set API_FOOTBALL_KEY --repo Mala2/fixture.json
 gh variable set API_FOOTBALL_TEAM_ID --repo Mala2/fixture.json --body "<verified-numeric-id>"
+gh variable set API_FOOTBALL_SEASON --repo Mala2/fixture.json --body "2026"
 ```
 
 `gh secret set` prompts for the secret without putting it in the command.
+
+To diagnose which seasons API-Football exposes for team `2932`, make this
+request manually with the API key header:
+
+```text
+GET /teams/seasons?team=2932
+```
+
+This diagnostic is intentionally not part of the scheduled updater.
 
 The workflow runs at minute 17 every six hours and supports manual execution
 from **Actions → Update next fixture → Run workflow**. It grants only
