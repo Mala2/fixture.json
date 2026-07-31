@@ -1,0 +1,70 @@
+name: Update next fixture
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-next-fixture-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned dependencies
+        run: >-
+          python -m pip install
+          --requirement tools/fixture_updater/requirements.txt
+
+      - name: Run updater tests
+        run: >-
+          python -m unittest discover
+          -s tools/fixture_updater/tests
+          -p "test_*.py"
+          -v
+
+      - name: Update normalized fixture
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          API_FOOTBALL_TEAM_ID: ${{ vars.API_FOOTBALL_TEAM_ID }}
+          FIXTURE_OUTPUT_PATH: fixture.json
+          FIXTURE_REFRESH_AFTER_SECONDS: ${{ vars.FIXTURE_REFRESH_AFTER_SECONDS || '21600' }}
+          TARGET_TEAM_SLUG: ${{ vars.TARGET_TEAM_SLUG || 'al-hilal' }}
+          TARGET_TEAM_SHORT_NAME: ${{ vars.TARGET_TEAM_SHORT_NAME || 'HIL' }}
+        run: python tools/fixture_updater/update_fixture.py
+
+      - name: Validate generated fixture
+        run: python tools/fixture_updater/validate_output.py fixture.json
+
+      - name: Detect fixture change
+        id: fixture
+        shell: bash
+        run: |
+          if git diff --quiet -- fixture.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit changed fixture
+        if: steps.fixture.outputs.changed == 'true'
+        shell: bash
+        run: |
+          git config user.name "soccer-fixture-updater[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- fixture.json
+          git commit -m "chore(fixtures): update next Al Hilal fixture"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
