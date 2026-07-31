@@ -1,0 +1,2 @@
+# No third-party runtime or test dependencies.
+# Python 3.12 standard library only.
