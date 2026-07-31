@@ -8,7 +8,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -19,11 +19,13 @@ from normalize_fixture import (
 )
 from provider_api_football import (
     ApiFootballClient,
+    DEFAULT_LOOKAHEAD_DAYS,
     NoUpcomingFixture,
     ProviderConfigurationError,
     ProviderError,
     load_provider_sample,
     parse_provider_envelope,
+    validate_lookahead_days,
     validate_team_id,
 )
 from validate_output import (
@@ -50,6 +52,7 @@ class UpdaterSettings:
     team_id: int
     output_path: Path
     refresh_after_seconds: int
+    lookahead_days: int
     target_team_slug: str
     target_team_short_name: str
     aliases_path: Path
@@ -87,6 +90,12 @@ def settings_from_environment(
         minimum=300,
         maximum=86_400,
     )
+    lookahead_days = validate_lookahead_days(
+        os.environ.get(
+            "FIXTURE_LOOKAHEAD_DAYS",
+            str(DEFAULT_LOOKAHEAD_DAYS),
+        )
+    )
     target_team_slug = os.environ.get(
         "TARGET_TEAM_SLUG",
         DEFAULT_TARGET_TEAM_SLUG,
@@ -112,6 +121,7 @@ def settings_from_environment(
         team_id=team_id,
         output_path=output_path,
         refresh_after_seconds=refresh_after_seconds,
+        lookahead_days=lookahead_days,
         target_team_slug=target_team_slug,
         target_team_short_name=target_team_short_name,
         aliases_path=aliases_path,
@@ -148,8 +158,19 @@ def normalize_provider_payload(
     aliases: Mapping[str, str],
     *,
     now: datetime,
+    logger: logging.Logger | None = None,
 ) -> dict[str, Any]:
-    provider_fixture = parse_provider_envelope(payload, settings.team_id)
+    fixed_now_utc = now.astimezone(timezone.utc)
+    from_date = fixed_now_utc.date()
+    to_date = from_date + timedelta(days=settings.lookahead_days)
+    provider_fixture = parse_provider_envelope(
+        payload,
+        settings.team_id,
+        now_utc=fixed_now_utc,
+        logger=logger,
+        requested_from=from_date,
+        requested_to=to_date,
+    )
     normalized = normalize_fixture(
         provider_fixture,
         NormalizationConfig(
@@ -213,13 +234,18 @@ def main() -> int:
                 settings,
                 aliases,
                 now=now,
+                logger=logger,
             )
         else:
             api_key = os.environ.get("API_FOOTBALL_KEY", "")
             fetch_result = ApiFootballClient(
                 api_key,
                 logger=logger,
-            ).fetch_next_fixture(settings.team_id)
+            ).fetch_next_fixture(
+                settings.team_id,
+                now_utc=now,
+                lookahead_days=settings.lookahead_days,
+            )
             normalized = normalize_fixture(
                 fetch_result.fixture,
                 NormalizationConfig(
@@ -239,6 +265,7 @@ def main() -> int:
                 )
 
         serialize_validated_fixture(normalized)
+        logger.info("Output schema validation succeeded")
         _print_sanitized_summary(normalized)
         if arguments.dry_run:
             print("Dry run: output file was not modified")
