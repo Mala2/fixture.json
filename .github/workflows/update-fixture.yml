@@ -40,6 +40,7 @@ jobs:
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           API_FOOTBALL_TEAM_ID: ${{ vars.API_FOOTBALL_TEAM_ID }}
+          API_FOOTBALL_SEASON: ${{ vars.API_FOOTBALL_SEASON }}
           FIXTURE_OUTPUT_PATH: fixture.json
           FIXTURE_LOOKAHEAD_DAYS: ${{ vars.FIXTURE_LOOKAHEAD_DAYS || '180' }}
           FIXTURE_REFRESH_AFTER_SECONDS: ${{ vars.FIXTURE_REFRESH_AFTER_SECONDS || '21600' }}
