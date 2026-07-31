@@ -34,6 +34,7 @@ Required environment variables:
 Optional variables and defaults:
 
 - `FIXTURE_OUTPUT_PATH=fixture.json`
+- `FIXTURE_LOOKAHEAD_DAYS=180` (valid range: 7 through 365)
 - `FIXTURE_REFRESH_AFTER_SECONDS=21600`
 - `TARGET_TEAM_SLUG=al-hilal`
 - `TARGET_TEAM_SHORT_NAME=HIL`
@@ -42,13 +43,16 @@ Optional variables and defaults:
 dashboard before enabling the workflow. The updater requests:
 
 ```text
-GET /fixtures?team=<numeric-team-id>&next=1
+GET /fixtures?team=<numeric-team-id>&from=<current-UTC-date>&to=<UTC-date-plus-lookahead>&timezone=UTC
 ```
 
 over `https://v3.football.api-sports.io` with the `x-apisports-key` header,
 finite timeouts, a one-megabyte response limit, and at most one retry for
 temporary network or HTTP 5xx failures. Validation errors and HTTP 4xx
-responses are not retried.
+responses are not retried. The free-plan-incompatible `next` parameter is
+never sent. The updater strictly parses every returned fixture, skips
+finished, cancelled, unknown, malformed, and stale non-live candidates, then
+prefers a live fixture or otherwise chooses the earliest future fixture.
 
 ## Local setup
 
@@ -75,7 +79,7 @@ Saved-response run without a network call or API key:
 ```sh
 API_FOOTBALL_TEAM_ID=2939 \
 python tools/fixture_updater/update_fixture.py \
-  --provider-sample tools/fixture_updater/tests/fixtures/api_football_next_fixture.json \
+  --provider-sample tools/fixture_updater/tests/fixtures/api_football_multi_fixture.json \
   --output /tmp/fixture.json
 ```
 
@@ -128,7 +132,9 @@ and no commit is created unless fixture content changes.
 | `PST` | `postponed` |
 | `CANC`, `ABD`, `AWD`, `WO` | `cancelled` |
 
-An unknown code is a validation failure and preserves the existing JSON.
+An unknown code is logged and skipped during local candidate selection. If no
+known usable candidate remains, the updater preserves the existing JSON and
+uses the no-fixture exit behavior.
 
 ## Team abbreviations
 
@@ -166,8 +172,8 @@ API_FOOTBALL_TEAM_ID=<verified numeric team ID>
 ```
 
 Optional repository variables are
-`FIXTURE_REFRESH_AFTER_SECONDS`, `TARGET_TEAM_SLUG`, and
-`TARGET_TEAM_SHORT_NAME`.
+`FIXTURE_LOOKAHEAD_DAYS`, `FIXTURE_REFRESH_AFTER_SECONDS`,
+`TARGET_TEAM_SLUG`, and `TARGET_TEAM_SHORT_NAME`.
 
 With GitHub CLI, the equivalent setup is:
 
