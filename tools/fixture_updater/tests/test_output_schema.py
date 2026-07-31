@@ -16,10 +16,8 @@ if str(UPDATER_DIR) not in sys.path:
     sys.path.insert(0, str(UPDATER_DIR))
 
 from normalize_fixture import NormalizationConfig, normalize_fixture  # noqa: E402
-from provider_api_football import (  # noqa: E402
-    ProviderConfigurationError,
-    parse_provider_envelope,
-)
+from provider_common import ProviderConfigurationError  # noqa: E402
+from provider_thesportsdb import parse_events_envelope  # noqa: E402
 from update_fixture import settings_from_environment  # noqa: E402
 from validate_output import (  # noqa: E402
     OutputValidationError,
@@ -31,43 +29,63 @@ from validate_output import (  # noqa: E402
 
 FIXTURES_DIR = Path(__file__).with_name("fixtures")
 FIXED_NOW = datetime(2026, 7, 31, 0, 48, tzinfo=timezone.utc)
+BASE_ENVIRONMENT = {
+    "FIXTURE_PROVIDER": "thesportsdb",
+    "THESPORTSDB_API_KEY": "123",
+    "THESPORTSDB_TEAM_ID": "136013",
+}
+
+
+def load_payload(name: str) -> dict:
+    return json.loads(
+        (FIXTURES_DIR / name).read_text(encoding="utf-8")
+    )
 
 
 def make_normalized(now: datetime = FIXED_NOW) -> dict:
-    with (
-        FIXTURES_DIR / "api_football_next_fixture.json"
-    ).open("r", encoding="utf-8") as sample:
-        provider = parse_provider_envelope(
-            json.load(sample),
-            2939,
-            now_utc=now,
-            season=2026,
-        )
+    provider = parse_events_envelope(
+        load_payload("thesportsdb_next_event.json"),
+        "136013",
+        now_utc=FIXED_NOW,
+    )
     return normalize_fixture(
         provider,
         NormalizationConfig(
-            target_team_id=2939,
+            target_team_id="136013",
             target_team_slug="al-hilal",
             target_team_short_name="HIL",
+            target_team_name="Al Hilal",
             refresh_after_seconds=21600,
         ),
-        {"Al Hilal": "HIL", "Al Nassr": "NAS"},
+        {
+            "Al-Hilal": "HIL",
+            "Al Hilal": "HIL",
+            "Al-Ahli Doha": "AHD",
+        },
         now=now,
     )
 
 
+def subprocess_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.update(BASE_ENVIRONMENT)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    return environment
+
+
 class OutputSchemaTests(unittest.TestCase):
-    def test_normalized_output_matches_firmware_schema(self) -> None:
+    def test_normalized_output_matches_existing_firmware_schema(self) -> None:
         normalized = validate_normalized_fixture(make_normalized())
         self.assertEqual(normalized["schema_version"], 1)
         self.assertEqual(
             normalized["fixture"]["id"],
-            "api-football-1234567",
+            "thesportsdb-2549422",
         )
         self.assertEqual(
             normalized["fixture"]["kickoff_utc"],
-            "2026-08-16T03:00:00Z",
+            "2026-08-03T15:00:00Z",
         )
+        self.assertEqual(normalized["team"]["id"], "al-hilal")
         self.assertEqual(
             normalized["team"],
             normalized["fixture"]["home_team"],
@@ -109,33 +127,28 @@ class OutputSchemaTests(unittest.TestCase):
             original = make_normalized()
             replace_if_meaningfully_changed(output, original)
             replacement = copy.deepcopy(original)
-            replacement["fixture"]["id"] = "api-football-7654321"
+            replacement["fixture"]["id"] = "thesportsdb-7654321"
             replacement["fixture"]["kickoff_utc"] = "2026-08-23T03:00:00Z"
             self.assertTrue(
                 replace_if_meaningfully_changed(output, replacement)
             )
             self.assertEqual(
                 load_and_validate(output)["fixture"]["id"],
-                "api-football-7654321",
+                "thesportsdb-7654321",
             )
 
-    def test_sample_dry_run_does_not_write_output(self) -> None:
+    def test_sample_dry_run_does_not_write_output_or_log_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "fixture.json"
-            environment = os.environ.copy()
-            environment["API_FOOTBALL_TEAM_ID"] = "2939"
-            environment["API_FOOTBALL_SEASON"] = "2026"
-            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            environment = subprocess_environment()
+            environment["THESPORTSDB_API_KEY"] = "do-not-log-this"
             completed = subprocess.run(
                 [
                     sys.executable,
                     str(UPDATER_DIR / "update_fixture.py"),
                     "--dry-run",
                     "--provider-sample",
-                    str(
-                        FIXTURES_DIR /
-                        "api_football_next_fixture.json"
-                    ),
+                    str(FIXTURES_DIR / "thesportsdb_next_event.json"),
                     "--output",
                     str(output),
                 ],
@@ -146,154 +159,83 @@ class OutputSchemaTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertIn("Dry run", completed.stdout)
+            self.assertIn(
+                "Normalized schema validation succeeded",
+                completed.stderr,
+            )
+            self.assertNotIn("do-not-log-this", completed.stderr)
             self.assertFalse(output.exists())
 
     def test_provider_validation_error_preserves_exit_code_four(self) -> None:
-        environment = os.environ.copy()
-        environment["API_FOOTBALL_TEAM_ID"] = "2939"
-        environment["API_FOOTBALL_SEASON"] = "2026"
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         completed = subprocess.run(
             [
                 sys.executable,
                 str(UPDATER_DIR / "update_fixture.py"),
                 "--dry-run",
                 "--provider-sample",
-                str(FIXTURES_DIR / "api_football_error_response.json"),
+                str(FIXTURES_DIR / "thesportsdb_unknown_status.json"),
             ],
             check=False,
             capture_output=True,
             text=True,
-            env=environment,
+            env=subprocess_environment(),
         )
         self.assertEqual(completed.returncode, 4, completed.stderr)
         self.assertIn("Provider error:", completed.stderr)
 
-    def test_lookahead_days_defaults_to_180(self) -> None:
-        with mock.patch.dict(
-            os.environ,
-            {
-                "API_FOOTBALL_TEAM_ID": "2939",
-                "API_FOOTBALL_SEASON": "2026",
-            },
-            clear=True,
-        ):
-            self.assertEqual(
-                settings_from_environment(
-                    now_utc=FIXED_NOW,
-                ).lookahead_days,
-                180,
-            )
+    def test_thesportsdb_is_default_provider(self) -> None:
+        environment = dict(BASE_ENVIRONMENT)
+        environment.pop("FIXTURE_PROVIDER")
+        with mock.patch.dict(os.environ, environment, clear=True):
+            settings = settings_from_environment(now_utc=FIXED_NOW)
+        self.assertEqual(settings.provider, "thesportsdb")
+        self.assertEqual(settings.team_id, "136013")
 
-    def test_missing_season_fails_before_provider_request(self) -> None:
-        environment = os.environ.copy()
-        environment["API_FOOTBALL_TEAM_ID"] = "2939"
-        environment.pop("API_FOOTBALL_SEASON", None)
-        environment["API_FOOTBALL_KEY"] = "must-not-be-used"
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(UPDATER_DIR / "update_fixture.py"),
-                "--dry-run",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=environment,
-        )
-        self.assertEqual(completed.returncode, 2, completed.stderr)
-        self.assertIn("API_FOOTBALL_SEASON", completed.stderr)
-        self.assertNotIn("Provider request:", completed.stderr)
-
-    def test_invalid_season_is_rejected(self) -> None:
-        for value in ("abcd", "999", "12345", "1999", "2028"):
-            with self.subTest(value=value):
-                with mock.patch.dict(
-                    os.environ,
-                    {
-                        "API_FOOTBALL_TEAM_ID": "2939",
-                        "API_FOOTBALL_SEASON": value,
-                    },
-                    clear=True,
-                ):
+    def test_missing_provider_configuration_fails(self) -> None:
+        for missing_name in ("THESPORTSDB_API_KEY", "THESPORTSDB_TEAM_ID"):
+            with self.subTest(missing_name=missing_name):
+                environment = dict(BASE_ENVIRONMENT)
+                environment.pop(missing_name)
+                with mock.patch.dict(os.environ, environment, clear=True):
                     with self.assertRaisesRegex(
                         ProviderConfigurationError,
-                        "API_FOOTBALL_SEASON",
+                        missing_name,
                     ):
                         settings_from_environment(now_utc=FIXED_NOW)
 
-    def test_invalid_lookahead_days_is_rejected(self) -> None:
-        for value in ("six", "6", "366", "-10"):
-            with self.subTest(value=value):
-                with mock.patch.dict(
-                    os.environ,
-                    {
-                        "API_FOOTBALL_TEAM_ID": "2939",
-                        "API_FOOTBALL_SEASON": "2026",
-                        "FIXTURE_LOOKAHEAD_DAYS": value,
-                    },
-                    clear=True,
-                ):
-                    with self.assertRaisesRegex(
-                        ProviderConfigurationError,
-                        "FIXTURE_LOOKAHEAD_DAYS",
-                    ):
-                        settings_from_environment(now_utc=FIXED_NOW)
+    def test_unsupported_provider_is_rejected(self) -> None:
+        environment = dict(BASE_ENVIRONMENT)
+        environment["FIXTURE_PROVIDER"] = "api-football"
+        with mock.patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(
+                ProviderConfigurationError,
+                "must be thesportsdb",
+            ):
+                settings_from_environment(now_utc=FIXED_NOW)
 
-    def test_empty_response_preserves_existing_output(self) -> None:
-        self._assert_no_fixture_preserves_output(
-            FIXTURES_DIR / "api_football_empty_response.json"
-        )
-
-    def test_no_usable_candidate_preserves_existing_output(self) -> None:
-        payload = json.loads(
-            (
-                FIXTURES_DIR / "api_football_multi_fixture.json"
-            ).read_text(encoding="utf-8")
-        )
-        payload["response"] = [
-            entry
-            for entry in payload["response"]
-            if entry["fixture"]["status"]["short"] in {"FT", "CANC"}
-        ]
-        payload["results"] = len(payload["response"])
-        with tempfile.TemporaryDirectory() as directory:
-            sample = Path(directory) / "no-usable.json"
-            sample.write_text(json.dumps(payload), encoding="utf-8")
-            self._assert_no_fixture_preserves_output(sample)
-
-    def _assert_no_fixture_preserves_output(self, sample: Path) -> None:
+    def test_empty_events_preserves_existing_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "fixture.json"
             output.write_bytes(serialize_validated_fixture(make_normalized()))
             original = output.read_bytes()
-            environment = os.environ.copy()
-            environment["API_FOOTBALL_TEAM_ID"] = "2939"
-            environment["API_FOOTBALL_SEASON"] = "2026"
-            environment["PYTHONDONTWRITEBYTECODE"] = "1"
             completed = subprocess.run(
                 [
                     sys.executable,
                     str(UPDATER_DIR / "update_fixture.py"),
                     "--provider-sample",
-                    str(sample),
+                    str(FIXTURES_DIR / "thesportsdb_empty_events.json"),
                     "--output",
                     str(output),
                 ],
                 check=False,
                 capture_output=True,
                 text=True,
-                env=environment,
+                env=subprocess_environment(),
             )
             self.assertEqual(completed.returncode, 3, completed.stderr)
+            self.assertIn("Events returned: 0", completed.stderr)
+            self.assertIn("TheSportsDB team ID: 136013", completed.stderr)
             self.assertIn("existing output preserved", completed.stderr)
-            self.assertIn("Provider team ID: 2939", completed.stderr)
-            self.assertIn("Provider season: 2026", completed.stderr)
-            self.assertIn(
-                "Requested fixture date range:",
-                completed.stderr,
-            )
             self.assertEqual(output.read_bytes(), original)
 
 

@@ -1,0 +1,17 @@
+{
+  "events": [
+    {
+      "idEvent": "2549422",
+      "strLeague": "Club Friendlies",
+      "strHomeTeam": "Al-Hilal",
+      "strAwayTeam": "Al-Ahli Doha",
+      "idHomeTeam": "136013",
+      "idAwayTeam": "138049",
+      "dateEvent": "2026-08-03",
+      "strTime": "15:00:00",
+      "strTimestamp": "2026-08-03T15:00:00Z",
+      "strVenue": "Kingdom Arena",
+      "strStatus": "UNKNOWN"
+    }
+  ]
+}

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import sys
 import unittest
@@ -18,117 +17,135 @@ from normalize_fixture import (  # noqa: E402
     fallback_abbreviation,
     map_status,
     normalize_fixture,
+    normalize_team_id,
     resolve_short_name,
 )
-from provider_api_football import parse_provider_envelope  # noqa: E402
+from provider_thesportsdb import parse_events_envelope  # noqa: E402
 
 FIXTURES_DIR = Path(__file__).with_name("fixtures")
 FIXED_NOW = datetime(2026, 7, 31, 0, 48, tzinfo=timezone.utc)
 
 
-def load_valid_payload() -> dict:
-    with (
-        FIXTURES_DIR / "api_football_next_fixture.json"
-    ).open("r", encoding="utf-8") as sample:
-        return json.load(sample)
+def load_payload(name: str) -> dict:
+    return json.loads(
+        (FIXTURES_DIR / name).read_text(encoding="utf-8")
+    )
 
 
 def config() -> NormalizationConfig:
     return NormalizationConfig(
-        target_team_id=2939,
+        target_team_id="136013",
         target_team_slug="al-hilal",
         target_team_short_name="HIL",
+        target_team_name="Al Hilal",
         refresh_after_seconds=21600,
     )
 
 
 class NormalizerTests(unittest.TestCase):
-    def test_target_team_is_home(self) -> None:
-        provider = parse_provider_envelope(
-            load_valid_payload(),
-            2939,
+    def normalize_sample(self, name: str) -> dict:
+        provider = parse_events_envelope(
+            load_payload(name),
+            "136013",
             now_utc=FIXED_NOW,
-            season=2026,
         )
-        normalized = normalize_fixture(
+        return normalize_fixture(
             provider,
             config(),
-            {"Al Hilal": "HIL", "Al Nassr": "NAS"},
+            {
+                "Al-Hilal": "HIL",
+                "Al Hilal": "HIL",
+                "Al-Ahli Doha": "AHD",
+            },
             now=FIXED_NOW,
         )
-        self.assertEqual(normalized["fixture"]["home_away"], "home")
-        self.assertEqual(normalized["team"], normalized["fixture"]["home_team"])
+
+    def test_target_team_is_canonical_when_home(self) -> None:
+        normalized = self.normalize_sample("thesportsdb_next_event.json")
+        fixture = normalized["fixture"]
+        self.assertEqual(fixture["home_away"], "home")
+        self.assertEqual(normalized["team"]["id"], "al-hilal")
+        self.assertEqual(fixture["home_team"]["id"], "al-hilal")
+        self.assertEqual(fixture["home_team"]["name"], "Al Hilal")
+        self.assertEqual(fixture["away_team"]["id"], "138049")
+        self.assertEqual(normalized["team"], fixture["home_team"])
+        self.assertNotIn("136013", json.dumps(normalized))
+
+    def test_target_team_is_canonical_when_away(self) -> None:
+        normalized = self.normalize_sample(
+            "thesportsdb_target_team_away.json"
+        )
+        fixture = normalized["fixture"]
+        self.assertEqual(fixture["home_away"], "away")
+        self.assertEqual(normalized["team"]["id"], "al-hilal")
+        self.assertEqual(fixture["away_team"]["id"], "al-hilal")
+        self.assertEqual(fixture["away_team"]["name"], "Al Hilal")
+        self.assertEqual(fixture["home_team"]["id"], "138049")
+        self.assertEqual(normalized["team"], fixture["away_team"])
+        self.assertNotIn("136013", json.dumps(normalized))
+
+    def test_provider_id_mapping_is_explicit_and_provider_independent(self) -> None:
         self.assertEqual(
-            normalized["fixture"]["kickoff_utc"],
-            "2026-08-16T03:00:00Z",
+            normalize_team_id(
+                "136013",
+                provider_target_team_id="136013",
+                canonical_target_team_id="al-hilal",
+                team_name="Al-Hilal",
+            ),
+            "al-hilal",
+        )
+        self.assertEqual(
+            normalize_team_id(
+                "137000",
+                provider_target_team_id="136013",
+                canonical_target_team_id="al-hilal",
+                team_name="Al-Ahli Doha",
+            ),
+            "137000",
+        )
+        self.assertEqual(
+            normalize_team_id(
+                None,
+                provider_target_team_id="136013",
+                canonical_target_team_id="al-hilal",
+                team_name="Al-Ahli Doha",
+            ),
+            "al-ahli-doha",
         )
 
-    def test_target_team_is_away(self) -> None:
-        payload = copy.deepcopy(load_valid_payload())
-        teams = payload["response"][0]["teams"]
-        teams["home"], teams["away"] = teams["away"], teams["home"]
-        provider = parse_provider_envelope(
-            payload,
-            2939,
-            now_utc=FIXED_NOW,
-            season=2026,
+    def test_fixture_id_identifies_provider_without_leaking_target_id(self) -> None:
+        normalized = self.normalize_sample("thesportsdb_next_event.json")
+        self.assertEqual(
+            normalized["fixture"]["id"],
+            "thesportsdb-2549422",
         )
-        normalized = normalize_fixture(
-            provider,
-            config(),
-            {"Al Hilal": "HIL", "Al Nassr": "NAS"},
-            now=FIXED_NOW,
-        )
-        self.assertEqual(normalized["fixture"]["home_away"], "away")
-        self.assertEqual(normalized["team"], normalized["fixture"]["away_team"])
 
-    def test_invalid_and_naive_kickoff_dates(self) -> None:
-        for timestamp in ("2026-02-30T03:00:00Z", "2026-08-16T03:00:00"):
+    def test_invalid_and_naive_normalized_kickoff_dates(self) -> None:
+        for timestamp in (
+            "2026-02-30T03:00:00Z",
+            "2026-08-16T03:00:00",
+        ):
             with self.subTest(timestamp=timestamp):
                 with self.assertRaises(NormalizationError):
                     canonical_utc_timestamp(timestamp)
 
-    def test_every_supported_status_category(self) -> None:
-        expected = {
-            "TBD": "scheduled",
-            "NS": "scheduled",
-            "1H": "live",
-            "HT": "live",
-            "2H": "live",
-            "ET": "live",
-            "BT": "live",
-            "P": "live",
-            "SUSP": "live",
-            "INT": "live",
-            "LIVE": "live",
-            "FT": "finished",
-            "AET": "finished",
-            "PEN": "finished",
-            "PST": "postponed",
-            "CANC": "cancelled",
-            "ABD": "cancelled",
-            "AWD": "cancelled",
-            "WO": "cancelled",
-        }
-        for provider_status, normalized_status in expected.items():
-            with self.subTest(provider_status=provider_status):
-                self.assertEqual(
-                    map_status(provider_status),
-                    normalized_status,
-                )
-
-    def test_unknown_status_fails(self) -> None:
+    def test_legacy_status_mapper_remains_strict(self) -> None:
+        self.assertEqual(map_status("NS"), "scheduled")
+        self.assertEqual(map_status("LIVE"), "live")
+        self.assertEqual(map_status("FT"), "finished")
+        self.assertEqual(map_status("PST"), "postponed")
+        self.assertEqual(map_status("CANC"), "cancelled")
         with self.assertRaisesRegex(NormalizationError, "unknown.*XYZ"):
             map_status("XYZ")
 
     def test_abbreviation_alias_then_configured_then_fallback(self) -> None:
         self.assertEqual(
             resolve_short_name(
-                "Al Nassr",
-                aliases={"Al Nassr": "NAS"},
-                configured_target_short_name="ALT",
+                "Al-Ahli Doha",
+                aliases={"Al-Ahli Doha": "AHD"},
+                configured_target_short_name=None,
             ),
-            "NAS",
+            "AHD",
         )
         self.assertEqual(
             resolve_short_name(

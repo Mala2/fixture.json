@@ -8,7 +8,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -17,16 +17,16 @@ from normalize_fixture import (
     NormalizationError,
     normalize_fixture,
 )
-from provider_api_football import (
-    ApiFootballClient,
-    DEFAULT_LOOKAHEAD_DAYS,
+from provider_common import (
     NoUpcomingFixture,
     ProviderConfigurationError,
     ProviderError,
+)
+from provider_thesportsdb import (
+    TheSportsDbClient,
     load_provider_sample,
-    parse_provider_envelope,
-    validate_lookahead_days,
-    validate_season,
+    parse_events_envelope,
+    validate_api_key,
     validate_team_id,
 )
 from validate_output import (
@@ -39,8 +39,10 @@ from validate_output import (
 DEFAULT_REFRESH_AFTER_SECONDS = 21_600
 DEFAULT_TARGET_TEAM_SLUG = "al-hilal"
 DEFAULT_TARGET_TEAM_SHORT_NAME = "HIL"
+DEFAULT_TARGET_TEAM_NAME = "Al Hilal"
 DEFAULT_OUTPUT_PATH = "fixture.json"
 DEFAULT_ALIASES_PATH = Path(__file__).with_name("team_aliases.json")
+DEFAULT_PROVIDER = "thesportsdb"
 
 EXIT_CONFIGURATION = 2
 EXIT_NO_FIXTURE = 3
@@ -50,13 +52,14 @@ EXIT_VALIDATION = 5
 
 @dataclass(frozen=True)
 class UpdaterSettings:
-    team_id: int
-    season: int
+    provider: str
+    api_key: str
+    team_id: str
     output_path: Path
     refresh_after_seconds: int
-    lookahead_days: int
     target_team_slug: str
     target_team_short_name: str
+    target_team_name: str
     aliases_path: Path
 
 
@@ -83,11 +86,21 @@ def settings_from_environment(
     now_utc: datetime,
     output_override: str | None = None,
 ) -> UpdaterSettings:
-    team_id_text = os.environ.get("API_FOOTBALL_TEAM_ID", "")
-    team_id = validate_team_id(team_id_text)
-    season = validate_season(
-        os.environ.get("API_FOOTBALL_SEASON", ""),
-        now_utc=now_utc,
+    if now_utc.tzinfo is None or now_utc.utcoffset() is None:
+        raise ProviderConfigurationError(
+            "now_utc must be a timezone-aware datetime"
+        )
+    provider = os.environ.get(
+        "FIXTURE_PROVIDER",
+        DEFAULT_PROVIDER,
+    ).strip().lower()
+    if provider != DEFAULT_PROVIDER:
+        raise ProviderConfigurationError(
+            "FIXTURE_PROVIDER must be thesportsdb"
+        )
+    api_key = validate_api_key(os.environ.get("THESPORTSDB_API_KEY", ""))
+    team_id = validate_team_id(
+        os.environ.get("THESPORTSDB_TEAM_ID", "")
     )
     refresh_after_seconds = _parse_positive_integer(
         os.environ.get(
@@ -98,12 +111,6 @@ def settings_from_environment(
         minimum=300,
         maximum=86_400,
     )
-    lookahead_days = validate_lookahead_days(
-        os.environ.get(
-            "FIXTURE_LOOKAHEAD_DAYS",
-            str(DEFAULT_LOOKAHEAD_DAYS),
-        )
-    )
     target_team_slug = os.environ.get(
         "TARGET_TEAM_SLUG",
         DEFAULT_TARGET_TEAM_SLUG,
@@ -112,11 +119,19 @@ def settings_from_environment(
         "TARGET_TEAM_SHORT_NAME",
         DEFAULT_TARGET_TEAM_SHORT_NAME,
     ).strip()
+    target_team_name = os.environ.get(
+        "TARGET_TEAM_NAME",
+        DEFAULT_TARGET_TEAM_NAME,
+    ).strip()
     if not target_team_slug:
         raise ProviderConfigurationError("TARGET_TEAM_SLUG must not be empty")
     if not target_team_short_name:
         raise ProviderConfigurationError(
             "TARGET_TEAM_SHORT_NAME must not be empty"
+        )
+    if not target_team_name:
+        raise ProviderConfigurationError(
+            "TARGET_TEAM_NAME must not be empty"
         )
     output_path = Path(
         output_override
@@ -126,13 +141,14 @@ def settings_from_environment(
         os.environ.get("TEAM_ALIASES_PATH", str(DEFAULT_ALIASES_PATH))
     )
     return UpdaterSettings(
+        provider=provider,
+        api_key=api_key,
         team_id=team_id,
-        season=season,
         output_path=output_path,
         refresh_after_seconds=refresh_after_seconds,
-        lookahead_days=lookahead_days,
         target_team_slug=target_team_slug,
         target_team_short_name=target_team_short_name,
+        target_team_name=target_team_name,
         aliases_path=aliases_path,
     )
 
@@ -170,16 +186,11 @@ def normalize_provider_payload(
     logger: logging.Logger | None = None,
 ) -> dict[str, Any]:
     fixed_now_utc = now.astimezone(timezone.utc)
-    from_date = fixed_now_utc.date()
-    to_date = from_date + timedelta(days=settings.lookahead_days)
-    provider_fixture = parse_provider_envelope(
+    provider_fixture = parse_events_envelope(
         payload,
         settings.team_id,
         now_utc=fixed_now_utc,
         logger=logger,
-        requested_from=from_date,
-        requested_to=to_date,
-        season=settings.season,
     )
     normalized = normalize_fixture(
         provider_fixture,
@@ -188,6 +199,7 @@ def normalize_provider_payload(
             target_team_slug=settings.target_team_slug,
             target_team_short_name=settings.target_team_short_name,
             refresh_after_seconds=settings.refresh_after_seconds,
+            target_team_name=settings.target_team_name,
         ),
         aliases,
         now=now,
@@ -209,7 +221,7 @@ def _print_sanitized_summary(normalized: Mapping[str, Any]) -> None:
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Update the ESP32 fixture JSON from API-Football."
+        description="Update the ESP32 fixture JSON from TheSportsDB."
     )
     parser.add_argument(
         "--dry-run",
@@ -239,6 +251,8 @@ def main() -> int:
             output_override=arguments.output,
         )
         aliases = load_aliases(settings.aliases_path)
+        logger.info("Fixture provider: %s", settings.provider)
+        logger.info("TheSportsDB team ID: %s", settings.team_id)
 
         if arguments.provider_sample:
             payload = load_provider_sample(arguments.provider_sample)
@@ -250,15 +264,12 @@ def main() -> int:
                 logger=logger,
             )
         else:
-            api_key = os.environ.get("API_FOOTBALL_KEY", "")
-            fetch_result = ApiFootballClient(
-                api_key,
+            fetch_result = TheSportsDbClient(
+                settings.api_key,
                 logger=logger,
-            ).fetch_next_fixture(
+            ).fetch_next_event(
                 settings.team_id,
-                season=settings.season,
                 now_utc=now,
-                lookahead_days=settings.lookahead_days,
             )
             normalized = normalize_fixture(
                 fetch_result.fixture,
@@ -267,19 +278,15 @@ def main() -> int:
                     target_team_slug=settings.target_team_slug,
                     target_team_short_name=settings.target_team_short_name,
                     refresh_after_seconds=settings.refresh_after_seconds,
+                    target_team_name=settings.target_team_name,
                 ),
                 aliases,
                 now=now,
             )
             validate_normalized_fixture(normalized)
-            if fetch_result.remaining_requests is not None:
-                logger.info(
-                    "Provider requests remaining: %d",
-                    fetch_result.remaining_requests,
-                )
 
         serialize_validated_fixture(normalized)
-        logger.info("Output schema validation succeeded")
+        logger.info("Normalized schema validation succeeded")
         _print_sanitized_summary(normalized)
         if arguments.dry_run:
             print("Dry run: output file was not modified")
@@ -290,6 +297,7 @@ def main() -> int:
             normalized,
         )
         if changed:
+            logger.info("fixture.json updated")
             print(f"Updated normalized fixture: {settings.output_path}")
         else:
             print("No meaningful fixture change; output left untouched")

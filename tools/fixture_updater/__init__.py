@@ -1,1 +1,1 @@
-"""Scheduled API-Football to ESP32 fixture updater."""
+"""Scheduled TheSportsDB-to-ESP32 fixture updater."""

@@ -1,222 +1,175 @@
 # Soccer fixture updater
 
-This updater makes one scheduled API-Football request, converts the provider
-response into the existing ESP32 schema, validates it, and atomically replaces
-the repository-root `fixture.json` only when the meaningful fixture data
-changes.
+The updater queries TheSportsDB, validates the provider response, normalizes
+one usable event into the existing ESP32 schema, and atomically replaces
+`fixture.json` only when meaningful fixture data changed. It uses only the
+Python standard library.
+
+## Active provider configuration
+
+The active and default provider is `thesportsdb`:
 
 ```text
-API-Football
-  -> GitHub Actions
-  -> fixture.json
-  -> raw.githubusercontent.com
-  -> LilyGO T-RGB
+FIXTURE_PROVIDER=thesportsdb
+THESPORTSDB_API_KEY=123
+THESPORTSDB_TEAM_ID=136013
+FIXTURE_OUTPUT_PATH=fixture.json
+FIXTURE_REFRESH_AFTER_SECONDS=21600
+TARGET_TEAM_SLUG=al-hilal
+TARGET_TEAM_SHORT_NAME=HIL
 ```
 
-The API key exists only as a GitHub Actions secret or local environment
-variable. It is never placed in firmware, JSON, command-line arguments,
-provider samples, logs, or Git history. This is a six-hour next-fixture
-prototype, not a live-score updater.
+TheSportsDB key `123` is its public free key, so no private provider secret is
+required. Team ID `136013` is used only inside the updater to query and
+identify Al Hilal. The device-facing normalized ID is always `al-hilal`.
 
-## Provider configuration
-
-Create an API-Football account through the
-[API-Football dashboard](https://dashboard.api-football.com/register). Use the
-dashboard's team search or Live Tester to find Al Hilal and record its numeric
-team ID. Do not repeatedly perform team or league discovery in the scheduled
-workflow.
-
-Required environment variables:
-
-- `API_FOOTBALL_KEY`: secret API-Sports key.
-- `API_FOOTBALL_TEAM_ID`: positive numeric team ID.
-- `API_FOOTBALL_SEASON`: four-digit starting year for the competition season.
-
-Optional variables and defaults:
-
-- `FIXTURE_OUTPUT_PATH=fixture.json`
-- `FIXTURE_LOOKAHEAD_DAYS=180` (valid range: 7 through 365)
-- `FIXTURE_REFRESH_AFTER_SECONDS=21600`
-- `TARGET_TEAM_SLUG=al-hilal`
-- `TARGET_TEAM_SHORT_NAME=HIL`
-
-`API_FOOTBALL_TEAM_ID` and `API_FOOTBALL_SEASON` deliberately have no
-defaults. Verify both in the provider dashboard before enabling the workflow.
-The updater requests:
+The scheduled request is:
 
 ```text
-GET /fixtures?team=<numeric-team-id>&season=<four-digit-start-year>&from=<current-UTC-date>&to=<UTC-date-plus-lookahead>&timezone=UTC
+GET https://www.thesportsdb.com/api/v1/json/123/eventsnext.php?id=136013
 ```
 
-over `https://v3.football.api-sports.io` with the `x-apisports-key` header,
-finite timeouts, a one-megabyte response limit, and at most one retry for
-temporary network or HTTP 5xx failures. Validation errors and HTTP 4xx
-responses are not retried. The free-plan-incompatible `next` parameter is
-never sent. The updater strictly parses every returned fixture, skips
-finished, cancelled, unknown, malformed, and stale non-live candidates, then
-prefers a live fixture or otherwise chooses the earliest future fixture.
-Seasons spanning two calendar years use their starting year, so the
-2026–27 season is `API_FOOTBALL_SEASON=2026`; a January 2027 fixture remains
-eligible within that season and date range.
+The updater uses the known team ID directly because the free team-search
+endpoint is unreliable or restricted for arbitrary searches. It does not call
+team search or team lookup during scheduled updates.
 
-## Local setup
-
-Python 3.12 and its standard library are the only dependencies:
+For a manual identity diagnostic only:
 
 ```sh
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install --requirement tools/fixture_updater/requirements.txt
-python -m unittest discover -s tools/fixture_updater/tests -p "test_*.py" -v
+curl --fail --show-error --silent \
+  'https://www.thesportsdb.com/api/v1/json/123/lookupteam.php?id=136013'
 ```
 
-Set `API_FOOTBALL_TEAM_ID` and `API_FOOTBALL_SEASON`, and securely export
-`API_FOOTBALL_KEY` in the local shell. Do not save the key in a checked-in
-`.env` file or shell script.
+The lookup validator accepts controlled Al Hilal name variants, requires
+`idTeam=136013`, and requires `strSport=Soccer` when sport is supplied.
 
-Network dry run:
+## Normalized identity policy
 
-```sh
-python tools/fixture_updater/update_fixture.py --dry-run
-```
+Normalized IDs belong to the device contract and are provider-independent.
+Provider IDs are transport details internal to the updater.
 
-Saved-response run without a network call or API key:
+- Root `team.id` is `al-hilal`.
+- The fixture-side Al Hilal ID is `al-hilal`, whether Al Hilal is home or
+  away.
+- Provider target ID `136013` is never emitted as Al Hilal's normalized ID.
+- Opponent TheSportsDB IDs are preserved as strings when present and valid for
+  the existing firmware schema.
+- If an opponent ID is absent, a deterministic name slug is used.
 
-```sh
-API_FOOTBALL_TEAM_ID=2939 API_FOOTBALL_SEASON=2026 \
-python tools/fixture_updater/update_fixture.py \
-  --provider-sample tools/fixture_updater/tests/fixtures/api_football_multi_fixture.json \
-  --output /tmp/fixture.json
-```
+Controlled provider names `Al-Hilal`, `Al Hilal`, `Al-Hilal Saudi FC`, and
+`Al Hilal SFC` normalize to name `Al Hilal`, short name `HIL`, and ID
+`al-hilal`.
 
-Validate any generated file independently:
+Team abbreviations remain in `team_aliases.json`. It includes `Al-Hilal`,
+`Al Hilal`, and `Al-Ahli Doha`; unknown opponents use the deterministic
+fallback generator.
 
-```sh
-python tools/fixture_updater/validate_output.py /tmp/fixture.json
-```
+## Provider validation and mapping
 
-The sample's `2939` ID is test data derived from the earlier prototype payload;
-verify the production ID in API-Football before configuring Actions.
+The client uses HTTPS, a finite timeout, HTTP-status checks, a 1 MiB response
+limit, strict JSON parsing, and an `events` array requirement. Normal
+scheduled logs contain counts and selected fields, never the complete provider
+response.
 
-## Output contract
+Provider fields map as follows:
 
-The output contains only:
-
-- schema version `1`;
-- updater UTC generation time;
-- refresh interval;
-- selected team;
-- provider-backed fixture ID;
-- competition, UTC kickoff, and venue;
-- home/away designation and teams; and
-- one firmware-supported normalized status.
-
-Provider IDs, logos, scores, league metadata, and raw provider responses are
-not copied into the device document. Team IDs are stable lowercase slugs. A
-fixture ID uses `api-football-<provider-id>`.
-
-Timestamps must be timezone-aware provider values. They are converted to
-`YYYY-MM-DDTHH:MM:SSZ`; local display conversion remains exclusively on the
-ESP32.
-
-Before replacement, the updater checks exact keys, JSON types, firmware string
-limits, timestamps, enum values, selected-team consistency, UTF-8
-serialization, the 4,096-byte device limit, and a serialize/parse/validate
-round trip. It writes a same-directory temporary file, flushes it, and uses
-atomic replacement.
-
-Changing `generated_at` alone is ignored. The existing file is left untouched
-and no commit is created unless fixture content changes.
-
-## Status mapping
-
-| API-Football codes | Device status |
+| TheSportsDB | Normalized field |
 | --- | --- |
-| `TBD`, `NS` | `scheduled` |
-| `1H`, `HT`, `2H`, `ET`, `BT`, `P`, `SUSP`, `INT`, `LIVE` | `live` |
-| `FT`, `AET`, `PEN` | `finished` |
-| `PST` | `postponed` |
-| `CANC`, `ABD`, `AWD`, `WO` | `cancelled` |
+| `idEvent` | `fixture.id`, prefixed with `thesportsdb-` |
+| `strLeague` | `fixture.competition` |
+| `strTimestamp` | `fixture.kickoff_utc` |
+| `strVenue` | `fixture.venue` |
+| home/away IDs and names | normalized home/away team objects |
+| `strStatus` | `fixture.status` |
 
-An unknown code is logged and skipped during local candidate selection. If no
-known usable candidate remains, the updater preserves the existing JSON and
-uses the no-fixture exit behavior.
+`idHomeTeam` and `idAwayTeam` are compared with internal target ID `136013`
+to determine `home_away`. An event is rejected if the target is absent or
+ambiguous, its event ID or names are missing, kickoff is invalid, competition
+is missing, status is unusable, or it is clearly finished/in the past.
 
-## Team abbreviations
+Missing venue uses `Venue TBC`, which is accepted by the unchanged ESP32
+schema. An empty `events` array is a valid no-fixture result: the updater exits
+without replacing the previous file.
 
-`team_aliases.json` is checked first. The configured target-team abbreviation
-is second. Otherwise, a deterministic two-to-four-character uppercase ASCII
-fallback uses multiword initials or the first three meaningful characters.
-Add exact provider team names to the alias file when a preferred abbreviation
-is known.
+## Timestamp policy
 
-## Failure behavior
+`strTimestamp` is parsed first. It accepts ISO timestamps to minutes or
+seconds, with or without an explicit offset.
 
-- No upcoming fixture exits with code `3` and preserves the previous file.
-- Provider/HTTP/envelope failure exits with code `4`.
-- Normalization/output validation failure exits with code `5`.
-- Configuration failure exits with code `2`.
-- Raw provider responses are never written by production code.
-- A failed run cannot partially replace `fixture.json`.
+- Explicit offsets are converted to UTC.
+- A timestamp without an offset follows TheSportsDB's UTC convention. The
+  updater logs a warning and emits `Z`.
+- `dateEvent` and `strTime`, when present, must agree with the provider
+  timestamp's source date and time.
+- Invalid, impossible, or conflicting timestamps fail safely.
 
-A separate no-fixture device schema can be designed later. This updater never
-generates fake or empty fixture content.
+Provider timestamps are never interpreted as `America/Los_Angeles`; local
+conversion remains the ESP32's responsibility.
 
-## GitHub Actions setup
+## Status policy
 
-In `Mala2/fixture.json`, add the API key under **Settings → Secrets and
-variables → Actions → Secrets → New repository secret**:
+| TheSportsDB status | Device status |
+| --- | --- |
+| `NS`, `Not Started`, `TBD` | `scheduled` |
+| `POSTP`, `Postponed` | `postponed` |
+| `CANC`, `Cancelled` | `cancelled` |
+| `FT`, `Match Finished` | `finished` |
+| recognized live/in-progress values | `live` |
 
-```text
-API_FOOTBALL_KEY
-```
+An empty status with a future kickoff is inferred as `scheduled` with a
+warning. An unknown non-empty status is never silently treated as scheduled.
 
-Add this required repository variable under the adjacent **Variables** tab:
+## Safety and free-tier limitation
 
-```text
-API_FOOTBALL_TEAM_ID=2932
-API_FOOTBALL_SEASON=2026
-```
+The normalized document is strictly validated, serialized as UTF-8 with
+two-space indentation and a trailing newline, written through a temporary
+file, and atomically replaced. Validation and provider failures preserve the
+last valid `fixture.json`. A generated-time-only difference does not rewrite
+the file.
 
-Optional repository variables are
-`FIXTURE_LOOKAHEAD_DAYS`, `FIXTURE_REFRESH_AFTER_SECONDS`,
-`TARGET_TEAM_SLUG`, and `TARGET_TEAM_SHORT_NAME`.
+The free `eventsnext.php` endpoint may return only one upcoming home event.
+The result therefore must not be described as a guaranteed absolute next
+home-or-away fixture. This limitation is accepted for the prototype.
 
-With GitHub CLI, the equivalent setup is:
+The provider boundary is `provider_common.ProviderFixture`. To change
+providers later, add a bounded client/parser that produces that neutral model,
+then explicitly change the provider selection and workflow configuration.
+Keep provider identity mapping in the normalization layer and do not add a
+silent fallback provider.
 
-```sh
-gh secret set API_FOOTBALL_KEY --repo Mala2/fixture.json
-gh variable set API_FOOTBALL_TEAM_ID --repo Mala2/fixture.json --body "<verified-numeric-id>"
-gh variable set API_FOOTBALL_SEASON --repo Mala2/fixture.json --body "2026"
-```
+## Run locally
 
-`gh secret set` prompts for the secret without putting it in the command.
-
-To diagnose which seasons API-Football exposes for team `2932`, make this
-request manually with the API key header:
-
-```text
-GET /teams/seasons?team=2932
-```
-
-This diagnostic is intentionally not part of the scheduled updater.
-
-The workflow runs at minute 17 every six hours and supports manual execution
-from **Actions → Update next fixture → Run workflow**. It grants only
-`contents: write`, cancels an older overlapping run, runs all offline tests,
-updates and validates `fixture.json`, and commits only a meaningful change.
-
-Inspect logs for the sanitized request path, fixture summary, validation
-result, and optional numeric quota remaining. Logs must never contain the
-`x-apisports-key` value or provider headers.
-
-After a successful changed run, verify:
+Run all updater tests:
 
 ```sh
-curl --fail --silent --show-error \
-  https://raw.githubusercontent.com/Mala2/fixture.json/refs/heads/main/fixture.json |
-python -m json.tool
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s tools/fixture_updater/tests -p 'test_*.py' -v
 ```
 
-Then confirm the fixture ID and kickoff in the raw document. GitHub's raw CDN
-may cache the prior file briefly.
+Validate with the saved provider sample without changing `fixture.json`:
+
+```sh
+FIXTURE_PROVIDER=thesportsdb \
+THESPORTSDB_API_KEY=123 \
+THESPORTSDB_TEAM_ID=136013 \
+python3 tools/fixture_updater/update_fixture.py \
+  --dry-run \
+  --provider-sample \
+  tools/fixture_updater/tests/fixtures/thesportsdb_next_event.json
+```
+
+Run against the live endpoint without changing `fixture.json`:
+
+```sh
+FIXTURE_PROVIDER=thesportsdb \
+THESPORTSDB_API_KEY=123 \
+THESPORTSDB_TEAM_ID=136013 \
+python3 tools/fixture_updater/update_fixture.py --dry-run
+```
+
+Exit codes are `0` for success, `2` for configuration, `3` for no usable
+upcoming event, `4` for provider transport/response validation, and `5` for
+normalization/output validation.
+
+GitHub Actions runs the tests first, refreshes every six hours or on manual
+dispatch, and commits only a meaningful `fixture.json` change.
