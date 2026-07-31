@@ -1,0 +1,51 @@
+{
+  "get": "fixtures",
+  "parameters": {
+    "team": "2939",
+    "next": "1"
+  },
+  "errors": [],
+  "results": 1,
+  "paging": {
+    "current": 1,
+    "total": 1
+  },
+  "response": [
+    {
+      "fixture": {
+        "id": 1234567,
+        "date": "2026-08-16T06:00:00+03:00",
+        "timestamp": 1786849200,
+        "timezone": "Asia/Riyadh",
+        "venue": {
+          "id": 100,
+          "name": "Kingdom Arena",
+          "city": "Riyadh"
+        },
+        "status": {
+          "long": "Not Started",
+          "short": "NS",
+          "elapsed": null
+        }
+      },
+      "league": {
+        "id": 307,
+        "name": "Saudi Pro League",
+        "country": "Saudi Arabia",
+        "season": 2026
+      },
+      "teams": {
+        "home": {
+          "id": 2939,
+          "name": "Al Hilal",
+          "winner": null
+        },
+        "away": {
+          "id": 2940,
+          "name": "Al Nassr",
+          "winner": null
+        }
+      }
+    }
+  ]
+}
