@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-01T04:04:43Z",
+  "generated_at": "2026-08-01T08:35:53Z",
   "refresh_after_seconds": 21600,
   "team": {
     "id": "al-hilal",
@@ -23,22 +23,6 @@
       "name": "Al-Ahli Doha",
       "short_name": "AHD"
     },
-    "status": "scheduled",
-    "artwork": {
-      "home_badge": {
-        "url": "https://raw.githubusercontent.com/Mala2/fixture.json/main/assets/teams/al-hilal-5fdc52458019.png",
-        "sha256": "5fdc524580191c8965f4b12cd1ae544e6084f424b6de17cae78f520c6a476d61",
-        "width": 96,
-        "height": 96,
-        "format": "png"
-      },
-      "away_badge": {
-        "url": "https://raw.githubusercontent.com/Mala2/fixture.json/main/assets/teams/al-ahli-doha-4646eca34450.png",
-        "sha256": "4646eca344503cdf90fd6ceb60ebba31f5ee04a73913ce4a131bdb39ddd3f08d",
-        "width": 96,
-        "height": 96,
-        "format": "png"
-      }
-    }
+    "status": "scheduled"
   }
 }
